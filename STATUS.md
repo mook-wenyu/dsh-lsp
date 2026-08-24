@@ -1,6 +1,6 @@
 # STATUS — dsh-lsp
 
-> 更新：2026-08-24（第三次收尾：已部署）· 部署构建 105714c · CI 绿 · 158/158 本地与 CI 双绿
+> 更新：2026-08-24（第四次：崩溃根因修复完成，源码+测试+lib 已重建，待 web profile 部署）· 部署构建仍 105714c · 162/162 本地全绿
 
 ## 一、架构健康度
 
@@ -23,16 +23,30 @@
 - **工具描述诚实化（e15d617）**：organize_imports 注明不删除未使用 using（csharp-ls 限制，清理走 CS8019+code_action）、signature 注明需括号内光标且构造函数可能无返回、workspace_diagnostics 语义改为"已探明文件的最近诊断"。
 - 接口契约变化：无 schema 变更；工具 description 文本变化随下次 profile 更新生效。
 
+### 第三批（崩溃根因修复，源码+测试+lib 已重建，待部署）
+
+- **症状**：宿主 `fatal load failure: Error [ERR_STREAM_DESTROYED]: Cannot call write after a stream was destroyed`，栈在 vscode-jsonrpc `StreamMessageWriter.doWrite`，发生在 dsh-lsp-client 向 csharp-ls 子进程 stdin 写入时。先打印 `textDocument/diagnostic (pull model) 不支持` 说明崩溃前连接还活着（拿到了正常的 Method-not-found），随后 csharp-ls 死亡致下一次写入命中死流。
+- **根因因果链**：csharp-ls 子进程死亡（崩溃/OOM）→ `child.stdin` 销毁；`LspServerManager` 在 `onClose`/`exit` 时**不废弃 `this.connection`**（`cleanupProcess` 未置空），且 `syncDocument` 的 didOpen/didChange、`initializeHandshake` 的 `initialized`、`dispose` 的 `exit` 等 `sendNotification` 均为 **fire-and-forget（不 await、无 `.catch`）**。写入死流触发 `doWrite` 拒绝该 Promise → **未处理 Promise 拒绝** → Node 终止宿主进程。
+- **修复**（src/server-manager.ts、src/lsp-client.ts，均带中文根因注释）：
+  1. `cleanupProcess()` 中 dispose 并置空 `this.connection` → 死亡后 `activeConnection` 返回 null，`LspClient.connection` getter 抛干净的"未就绪"，后续不再写入死流。
+  2. 所有 fire-and-forget `sendNotification` 加 `.catch(() => {})`，瞬时/致命写入失败不会变成未处理拒绝使宿主崩溃。
+  3. `dispose()` 的 `connection.dispose()` 包进 try/catch（原在 try 外，死流可抛）。
+  4. `scheduleRestart()` 幂等（exit 与 onClose 双触发避免拉起多个 csharp-ls）。
+- **回归测试**：`__tests__/server-manager.test.ts`（子进程退出后连接废弃、握手 initialized 通知失败不抛未处理拒绝、dispose 时连接已销毁不异常）、`__tests__/lsp-client.test.ts`（didOpen 通知失败不抛未处理拒绝）。162 测试全绿，`tsc --noEmit` 通过；`lib/` 已 `npm run build` 重建，**尚未部署到 web profile**。
+- 接口契约变化：无。
+
 ## 三、已知风险点
 
+- **部署滞后（本次崩溃修复未部署）**：lib/ 已重建但 web profile 仍跑旧构建（105714c）；修复经 `dsh plugin --profile web install` 对账回填 bundles 后方可生效。**禁止裸 `pnpm install`**（不触发 bundles 对账，会静默丢失插件）。
 - ~~部署滞后~~ **已部署（2026-08-24 15:06）**：allowBuilds 键更新为 pnpm 实际解析形式（codeload tarball @105714c——git 依赖被锁文件钉在旧 hash 时需 `pnpm update <pkg>` 重解析，简单包名键对 git 依赖无效）；新实例 PID 18352 加载新构建，冒烟验证通过。后续 push 后 lockfile 仍钉 105714c，下次更新重复此流程。
 - 测试套件语义绑定 Windows 单平台（file URI ↔ 盘符路径断言等）；若未来要支持 Linux 宿主需先做跨平台化改造。
 - signature 对构造函数调用无返回、organize_imports 不删未使用：均为 csharp-ls 服务端能力边界，已写入描述与 README，无法客户端修复。
 
 ## 四、下次最该做的事
 
-1. Bug G 生产配对复验（可选）：在 cwd 位于 C# 项目内的会话调 diagnostics → workspace_diagnostics，确认聚合非恒空（本会话 cwd 不在 C# 项目内，池键不匹配无法自验）。
-2. （可选）多语言化设计文档：LanguageServerRegistry 抽象。
+1. **部署本次崩溃修复**：经 `dsh plugin --profile web install` 重新构建并回填 bundles（禁用裸 `pnpm install`），重启 DSH 后复验——触发一次 lsp_* 调用使 csharp-ls 在其后崩溃（或手动 kill 子进程），确认宿主不再 `fatal load failure`，且 csharp-ls 自动重启恢复。
+2. Bug G 生产配对复验（可选）：在 cwd 位于 C# 项目内的会话调 diagnostics → workspace_diagnostics，确认聚合非恒空（本会话 cwd 不在 C# 项目内，池键不匹配无法自验）。
+3. （可选）多语言化设计文档：LanguageServerRegistry 抽象。
 
 ## 附：2026-08-24 部署记录
 

@@ -8,6 +8,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ServerManagerOptions } from '../src/server-manager.js';
 
+/**
+ * 注入开关：置 true 时 sendNotification 返回被拒 Promise，
+ * 用于复现子进程流销毁后写入失败 → 未处理拒绝 → 宿主崩溃（ERR_STREAM_DESTROYED）。
+ */
+let rejectNotifications = false;
+
 // Mock vscode-jsonrpc — 不需要真实连接
 vi.mock('vscode-jsonrpc/node.js', () => ({
   createMessageConnection: vi.fn(() => ({
@@ -15,7 +21,9 @@ vi.mock('vscode-jsonrpc/node.js', () => ({
       capabilities: { textDocument: { hover: {} } },
       serverInfo: { name: 'mock-csharp-ls', version: '0.1.0' },
     }),
-    sendNotification: vi.fn(),
+    sendNotification: vi.fn(() =>
+      rejectNotifications ? Promise.reject(new Error('ERR_STREAM_DESTROYED')) : Promise.resolve(),
+    ),
     onNotification: vi.fn(),
     onClose: vi.fn(),
     onError: vi.fn(),
@@ -120,5 +128,71 @@ describe('LspServerManager', () => {
 
     // 至少被调用：idle → starting, starting → ready, ready → disposed
     expect(onStateChange).toHaveBeenCalled();
+  });
+
+  it('子进程退出（ready 态）后连接被废弃，避免写入已销毁流', async () => {
+    const { LspServerManager } = await import('../src/server-manager.js');
+    const { spawn } = await import('node:child_process');
+    const manager = new LspServerManager(createTestOptions());
+
+    await manager.start();
+    expect(manager.activeConnection).not.toBeNull();
+
+    // 取出被 mock 的子进程并模拟 csharp-ls 崩溃退出
+    const child = (spawn as unknown as vi.Mock).mock.results[0].value;
+    child.emit('exit', 1, null);
+
+    // exit 处理器同步执行：activeConnection 立即置空，后续写入不会命中死流
+    expect(manager.activeConnection).toBeNull();
+
+    // 重建：start() 应拉起新连接而非复用死连接
+    const conn2 = await manager.start();
+    expect(conn2).not.toBeNull();
+    expect(manager.activeConnection).not.toBeNull();
+
+    await manager.dispose();
+  });
+
+  it('握手时 initialized 通知写入失败不会抛出未处理拒绝（崩溃回归）', async () => {
+    rejectNotifications = true;
+    const { LspServerManager } = await import('../src/server-manager.js');
+    const manager = new LspServerManager(createTestOptions());
+
+    const rejections: unknown[] = [];
+    const onReject = (e: unknown) => rejections.push(e);
+    process.on('unhandledRejection', onReject);
+    try {
+      await manager.start();
+      // 排空微任务，让潜在未处理拒绝浮现（Promise.resolve 不被 fake timers 伪造）
+      await Promise.resolve();
+      await Promise.resolve();
+    } finally {
+      process.off('unhandledRejection', onReject);
+    }
+    expect(rejections).toHaveLength(0);
+    rejectNotifications = false;
+
+    await manager.dispose();
+  });
+
+  it('dispose 时连接已销毁（dispose 抛错）不引发异常', async () => {
+    const { LspServerManager } = await import('../src/server-manager.js');
+    const { createMessageConnection } = await import('vscode-jsonrpc/node.js');
+    (createMessageConnection as unknown as vi.Mock).mockImplementationOnce(() => ({
+      sendRequest: vi.fn().mockResolvedValue({ capabilities: {}, serverInfo: { name: 'x' } }),
+      sendNotification: vi.fn().mockReturnValue(Promise.resolve()),
+      onNotification: vi.fn(),
+      onClose: vi.fn(),
+      onError: vi.fn(),
+      listen: vi.fn(),
+      dispose: vi.fn(() => {
+        throw new Error('already destroyed');
+      }),
+    }));
+
+    const manager = new LspServerManager(createTestOptions());
+    await manager.start();
+    await expect(manager.dispose()).resolves.toBeUndefined();
+    expect(manager.currentState).toBe('disposed');
   });
 });

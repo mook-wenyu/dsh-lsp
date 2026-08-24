@@ -34,7 +34,9 @@ const { readFileSync } = await import('node:fs');
 function createMockConnection() {
   return {
     sendRequest: vi.fn(),
-    sendNotification: vi.fn(),
+    // 真实 vscode-jsonrpc 的 sendNotification 返回 Promise，mock 必须对齐，
+    // 否则源码中的 .catch() 链会在 undefined 上调用而抛错
+    sendNotification: vi.fn(() => Promise.resolve()),
   };
 }
 
@@ -545,6 +547,27 @@ describe('LspClient', () => {
 
     it('未知扩展名 → 扩展名本身', async () => {
       expect(await getLanguageIdFor('/data/file.xyz')).toBe('xyz');
+    });
+  });
+
+  // ─── 崩溃回归：fire-and-forget 通知写入失败不得变成未处理拒绝 ──
+  describe('通知写入失败（崩溃回归）', () => {
+    it('didOpen 通知写入失败不会抛出未处理拒绝', async () => {
+      mockConn.sendRequest.mockResolvedValueOnce(null); // hover 返回 null
+      mockConn.sendNotification.mockReturnValue(Promise.reject(new Error('ERR_STREAM_DESTROYED')));
+
+      const rejections: unknown[] = [];
+      const onReject = (e: unknown) => rejections.push(e);
+      process.on('unhandledRejection', onReject);
+      try {
+        const result = await client.hover('D:\\test\\File.cs', 0, 0);
+        // 排空微任务，让潜在未处理拒绝浮现
+        await new Promise((r) => setImmediate(r));
+        expect(result).toBeDefined();
+      } finally {
+        process.off('unhandledRejection', onReject);
+      }
+      expect(rejections).toHaveLength(0);
     });
   });
 });

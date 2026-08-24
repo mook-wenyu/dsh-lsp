@@ -310,8 +310,9 @@ export class LspServerManager {
     this._capabilities = result.capabilities;
     this._serverInfo = result.serverInfo ?? null;
 
-    // initialized 通知（无需等待响应）
-    this.connection.sendNotification('initialized', {});
+    // initialized 通知（无需等待响应）。fire-and-forget 写入失败（如流已销毁）
+    // 必须吞掉，否则成为未处理拒绝使宿主进程崩溃。
+    this.connection.sendNotification('initialized', {}).catch(() => {});
   }
 
   /** 优雅关闭 LSP 服务器。 */
@@ -329,12 +330,17 @@ export class LspServerManager {
           this.connection.sendRequest('shutdown'),
           new Promise<void>((resolve) => setTimeout(resolve, 3000)),
         ]);
-        // exit 通知
-        this.connection.sendNotification('exit');
+        // exit 通知（fire-and-forget，但写入失败绝不能变成未处理拒绝使宿主崩溃）
+        this.connection.sendNotification('exit').catch(() => {});
       } catch {
         // 忽略关闭过程中的错误
       }
-      this.connection.dispose();
+      // connection.dispose() 在死流上也可能抛，必须就地吞掉
+      try {
+        this.connection.dispose();
+      } catch {
+        // 连接可能已部分销毁
+      }
       this.connection = null;
     }
 
@@ -342,8 +348,22 @@ export class LspServerManager {
     this.setState('disposed');
   }
 
-  /** 清理子进程引用（终止子进程 + 移除监听器）。 */
+  /** 清理子进程引用（终止子进程 + 移除监听器 + 废弃连接）。 */
   private cleanupProcess(): void {
+    // 子进程已死，其 stdin/stdout 流随之销毁；若保留 this.connection 引用，
+    // 后续 sendRequest/sendNotification 会写入已销毁流并抛出 ERR_STREAM_DESTROYED，
+    // 该拒绝一旦未被处理即终止宿主进程（"fatal load failure"）。
+    // 此处显式废弃连接：activeConnection 返回 null → LspClient.connection getter
+    // 抛干净的"未就绪"错误，而非写入死流。
+    if (this.connection) {
+      try {
+        this.connection.dispose();
+      } catch {
+        // 连接可能已部分销毁
+      }
+      this.connection = null;
+    }
+
     if (this.process) {
       this.process.removeAllListeners();
       // 终止子进程，防止资源泄漏
@@ -365,6 +385,9 @@ export class LspServerManager {
       this.log('error', `连续失败 ${this.consecutiveFailures} 次，停止重启`);
       return;
     }
+
+    // 幂等：exit 与 onClose 都会触发重启，避免重复定时器拉起多个 csharp-ls
+    if (this.restartTimer !== null) return;
 
     const delay = Math.min(
       RESTART.INITIAL_DELAY_MS * Math.pow(2, this.consecutiveFailures),

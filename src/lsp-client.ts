@@ -129,7 +129,10 @@ export class LspClient {
           version,
           text,
         },
-      });
+        // fire-and-forget：服务器崩溃后子进程 stdin 已销毁，写入会拒绝。
+        // 未处理的拒绝会终止宿主进程（ERR_STREAM_DESTROYED / fatal load failure），
+        // 必须就地吞掉；连接废弃后此处根本不会到达（getter 先抛"未就绪"）。
+      }).catch(() => {});
       this.fileCache.set(filePath, { version, text });
     } else if (cached.text !== text) {
       // 内容变化：发送 didChange 通知（增量更新）
@@ -137,7 +140,8 @@ export class LspClient {
       this.connection.sendNotification('textDocument/didChange', {
         textDocument: { uri, version: newVersion },
         contentChanges: [{ text }],
-      });
+        // 同 didOpen：写入失败必须吞掉，避免未处理拒绝使宿主崩溃
+      }).catch(() => {});
       this.fileCache.set(filePath, { version: newVersion, text });
     }
     // 内容未变化时跳过通知，避免不必要的网络开销
