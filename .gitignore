@@ -1,0 +1,12 @@
+# 构建产物与依赖
+node_modules/
+lib/
+*.tsbuildinfo
+
+# C# 测试项目构建输出（test-project/.gitignore 已覆盖，此处兜底）
+test-project/bin/
+test-project/obj/
+
+# 运行期日志与临时文件
+*.log
+.DS_Store

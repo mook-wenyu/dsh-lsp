@@ -1,0 +1,3 @@
+- insert:
+    - id: lsp-client
+      name: '@echocore/dsh-lsp-client'
