@@ -13,6 +13,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { fileURLToPath } from 'node:url';
 import { createLspTools } from '../src/tools.js';
 import type { LspClient } from '../src/lsp-client.js';
 
@@ -161,10 +162,12 @@ describe('生产契约：懒启动接线（契约 D）', () => {
     };
     apply(ctx as never, { enabled: true });
 
-    // 真实 resolver + 真实文件系统：Program.cs 向上可发现 TestProject.csproj
+    // 真实 resolver + 真实文件系统：夹具相对本仓库定位（f60c97f 拆分后
+    // 旧 EchoCore 绝对路径已删除，机器特定路径曾致本回归锁必败），
+    // Program.cs 所在目录即含 TestProject.csproj
     await registered['lsp_document_symbols']!.execute(
-      { file_path: 'D:\\TSProjects\\EchoCore\\packages\\dsh-lsp-client\\test-project\\Program.cs' },
-      { agent: { id: 't1', session: { header: { cwd: 'D:\\TSProjects\\EchoCore' } } } },
+      { file_path: fileURLToPath(new URL('../test-project/Program.cs', import.meta.url)) },
+      { agent: { id: 't1', session: { header: { cwd: fileURLToPath(new URL('../test-project', import.meta.url)) } } } },
     );
     expect(dMocks.start).toHaveBeenCalled();
     expect(dMocks.LspServerManager).toHaveBeenCalledWith(
