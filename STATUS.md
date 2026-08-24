@@ -1,6 +1,6 @@
 # STATUS — dsh-lsp
 
-> 更新：2026-08-24（会话收尾）· main @ 9fecec1 · CI 绿 · 157/157 本地与 CI 双绿
+> 更新：2026-08-24（第二次收尾）· main @ e15d617 · CI 绿 · 158/158 本地与 CI 双绿
 
 ## 一、架构健康度
 
@@ -9,21 +9,34 @@
 
 ## 二、本次变更影响范围
 
+### 第一批（CI 修复链，生产代码零改动）
+
 - `package.json`：新增 `packageManager: pnpm@11.21.0`（修复 pnpm/action-setup 缺版本号致 CI 秒挂）。
 - `.github/workflows/ci.yml`：runner ubuntu-latest → windows-latest（对齐测试的 Windows 路径语义与实际部署目标）。
 - `__tests__/contract.test.ts`：契约 D 回归锁夹具路径由拆分前 EchoCore 绝对路径改为相对本仓库 `import.meta.url` 定位——该测试在 f60c97f 拆分删除夹具后已是必败测试（本地复现确认），交接文档"157 全绿"为拆分前旧状态。
-- 接口契约变化：无（生产代码零改动，全部为 CI/测试层）。
+
+### 第二批（真实项目验证驱动，eec34aa + e15d617）
+
+用户在真实 C# 项目（1810 个 .cs，只读）完成 14 工具全量验证：12 通过 / call_hierarchy 预期失败 / workspace_diagnostics 恒空。rename 双重交叉验证（123 处/56 文件与 references 精确一致；私有字段 9 处与 grep 一致）证明符号级操作可信。据此：
+
+- **Bug G 根因修复（eec34aa）**：workspace_diagnostics 恒空的因果链 = 它只读 push 缓存 → 缓存仅被 publishDiagnostics 通知喂入 → csharp-ls 主用 pull 路径的结果从不落缓存。修复：`server-manager.updateDiagnosticsCache()` 新增写入口，pull 成功结果写入统一缓存（干净文件写空数组）；连带修复 `workspaceDiagnostics()` 中未绑定的 `map(this.formatDiagnostic)`（缓存非空时必炸的潜伏缺陷，被新回归测试首次暴露）。新增 Bug G 回归锁测试。
+- **工具描述诚实化（e15d617）**：organize_imports 注明不删除未使用 using（csharp-ls 限制，清理走 CS8019+code_action）、signature 注明需括号内光标且构造函数可能无返回、workspace_diagnostics 语义改为"已探明文件的最近诊断"。
+- 接口契约变化：无 schema 变更；工具 description 文本变化随下次 profile 更新生效。
 
 ## 三、已知风险点
 
+- **部署滞后**：生产 profile 仍运行 #3d51b5b 构建——Bug G 修复与新描述需走完「allowBuilds hash 同步到 e15d617 → pnpm install --dir ~/.dsh/profiles/web → 重启 DSH」才生效。
 - 测试套件语义绑定 Windows 单平台（file URI ↔ 盘符路径断言等）；若未来要支持 Linux 宿主需先做跨平台化改造。
-- profile 的 `pnpm-workspace.yaml` allowBuilds 白名单键含精确 commit hash：下次 push 生产代码后更新 profile 依赖时必须同步换 hash 再 install。
-- 提示词边界式条件注入的行为面（A/B 工具选中率 ×3 取样）尚未验收，静态面已闭环。
+- signature 对构造函数调用无返回、organize_imports 不删未使用：均为 csharp-ls 服务端能力边界，已写入描述与 README，无法客户端修复。
 
 ## 四、下次最该做的事
 
-1. 行为 A/B 验收：在 C# 会话（cwd 位于含 .csproj 的目录，如本仓库 test-project 或真实 C# 项目）发「查 Dog 所有引用 + Speak 改名 MakeSound + 确认编译干净」×3 取样，统计 lsp_references/rename/diagnostics 主动选中次数。
-2. 通过后将验收结论同步 EchoCore 侧 STATUS.md 与记忆。
+1. 部署：profile allowBuilds 键换 #e15d617 → `pnpm install --dir ~/.dsh/profiles/web` → 重启 DSH → 用 diagnostics + workspace_diagnostics 复验 Bug G 修复在生产生效。
+2. （可选）多语言化设计文档：LanguageServerRegistry 抽象。
+
+## 附：2026-08-24 行为面验收结论
+
+原定 A/B ×3 取样协议被更有力的证据取代：用户主导的真实 C# 项目会话中，模型面对真实任务链主动、正确地选用了 references/definition/hover/implement/completion/signature/diagnostics/code_action/rename/format/document_symbols 等 12 个 lsp_* 工具并产出交叉验证级精度——注入提示词的生产行为面视为已验证。
 
 ## 附：2026-08-24 静态验收证据链（边界式条件注入 ec81bdc）
 

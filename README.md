@@ -103,11 +103,11 @@ lsp:
 | `lsp_call_hierarchy` | `callHierarchy/prepare + incoming/outgoingCalls` | 分析方法的调用层级 ⚠️ csharp-ls 0.26.0 未声明该能力，当前返回服务器错误 | `file_path`, `line`, `column` |
 | `lsp_code_action` | `textDocument/codeAction` | 获取诊断位置的快速修复建议 | `file_path`, `line`, `column`, `end_line?`, `end_column?`, `diagnostic_code?`, `diagnostic_message?` |
 | `lsp_completion` | `textDocument/completion` | 光标处智能补全 | `file_path`, `line`, `column` |
-| `lsp_signature` | `textDocument/signatureHelp` | 调用处的方法签名与活跃参数 | `file_path`, `line`, `column` |
+| `lsp_signature` | `textDocument/signatureHelp` | 调用处的方法签名与活跃参数；需光标在参数括号内，构造函数调用可能无返回 | `file_path`, `line`, `column` |
 | `lsp_format` | `textDocument/formatting` / `rangeFormatting` | 格式化全文或指定范围，返回待应用的编辑列表 | `file_path`, `start_line?`, `end_line?` |
 | `lsp_rename` | `textDocument/prepareRename + rename` | 符号重命名，返回跨文件编辑计划（不落盘） | `file_path`, `line`, `column`, `new_name` |
-| `lsp_organize_imports` | `textDocument/codeAction`（source） | 整理 using：补缺失、删未用、排序 | `file_path` |
-| `lsp_workspace_diagnostics` | 打开文件诊断汇总 | 按文件分组汇总所有已打开文件的错误与警告 | 无 |
+| `lsp_organize_imports` | `textDocument/codeAction`（source） | 整理 using：补缺失、按字母排序；**不删除未使用 using**（csharp-ls 限制）——清理走 diagnostics(CS8019) + code_action | `file_path` |
+| `lsp_workspace_diagnostics` | 诊断缓存聚合 | 按文件分组汇总已探明文件（调用过 diagnostics 或收到推送）的最近诊断 | 无 |
 
 **注意**：
 - 所有行列号参数从 **0** 开始（0-indexed），文件路径必须是 **绝对路径**
