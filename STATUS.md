@@ -1,6 +1,6 @@
 # STATUS — dsh-lsp
 
-> 更新：2026-08-24（第四次：崩溃根因修复完成并已部署到 web profile，待 DSH 重启加载）· 部署构建 5d84c4f · 162/162 本地全绿
+> 更新：2026-08-25（第五次：诊断能力驱动修复完成并已部署，待 DSH 重启加载）· 部署构建 4a3d43f · 166/166 本地全绿
 
 ## 一、架构健康度
 
@@ -36,6 +36,20 @@
 - **部署（2026-08-24）**：commit `5d84c4f` 已 push 至 `mook-wenyu/dsh-lsp`；web profile lockfile 前进至 `5d84c4f`，`pnpm-workspace.yaml` 的 allowBuilds 键同步更新为新 codeload hash；`dsh plugin --profile web install` 已对账 bundles，安装产物 `lib/` 含全部 4 处 `.catch` 守卫。运行中的 DSH 进程**需重启**方可加载新构建。
 - 接口契约变化：无。
 
+### 第四批（诊断能力驱动修复，已部署待重启加载）
+
+- **症状**：崩溃修复部署后宿主不再 `fatal load failure`，但诊断仍不可用——日志连打 `textDocument/diagnostic (pull model) 不支持，回退到 push 缓存`。
+- **实测证据（本机 csharp-ls 0.26.0 探针）**：①支持 pull（serverCapabilities.diagnosticProvider 已声明且 workspaceDiagnostics=true，pull 返回真实 CS1525）；②客户端声明 diagnostic 能力后 csharp-ls **完全不发 publishDiagnostics**——push 是死通道；③URI 大小写敏感：`file:///D:/` 命中返回诊断、`file:///d:/` 返回空。
+- **根因因果链**：旧 diagnostics() 为「先 pull 抛错则回退 push 缓存」→ 声明 pull 能力后服务器不再 push，push 缓存恒空（死路）→ 用户环境 pull 系统性抛错落入死缓存 → 空诊断。此前"干净文件零诊断"的冒烟结论掩盖了该问题。
+- **修复**：
+  1. initialize 后探测 serverCapabilities.diagnosticProvider，记录 supportsPull / supportsWorkspaceDiagnostic；
+  2. diagnostics()：pull 服务器以 pull 为唯一权威源（空报告即空），仅 pull-only 服务器读 push 缓存；catch 打印真实错误（code+message）替代笼统"不支持"；
+  3. workspaceDiagnostics() 改用 LSP 3.17 `workspace/diagnostic` 拉取全局诊断并刷新统一缓存后聚合（跳过 kind:'unchanged' 防止覆盖有效结果）；
+  4. 新增 normalizeUri（Windows 小写盘符归一），toUri/缓存键/请求 URI 全链路一致，消除跨工具调用路径大小写失配。
+- **回归测试**：能力探测、normalizeUri、归一化 pull URI、workspace/diagnostic 聚合。166/166 绿，tsc --noEmit 通过。
+- **部署（2026-08-25）**：commit `4a3d43f` 已 push；web profile lockfile 前进至 `4a3d43f`，allowBuilds 键同步更新；`dsh plugin --profile web install` 完成 bundles 对账；已核验活跃 symlink 构建含全部修复标记。运行中 DSH 需重启加载。
+- 接口契约变化：无。
+
 ## 三、已知风险点
 
 - **已部署（commit 5d84c4f）**：web profile 依赖前进至新提交，`pnpm-workspace.yaml` 的 allowBuilds 键同步更新为 `5d84c4f` 的 codeload hash，`dsh plugin --profile web install` 已完成 bundles 对账；安装产物 `lib/` 含全部 4 处 `.catch` 守卫。运行中的 DSH 进程**需重启**方可加载新构建（安装命令不热重载进程）。**禁止裸 `pnpm install`**（不触发 bundles 对账，会静默丢失插件）。
@@ -45,7 +59,7 @@
 
 ## 四、下次最该做的事
 
-1. **重启 DSH 加载新构建并复验崩溃修复**：重启 web profile 后触发一次 `lsp_*` 调用使 csharp-ls 启动，再手动 kill 该子进程，确认宿主不再 `fatal load failure`（ERR_STREAM_DESTROYED），且 csharp-ls 经 `scheduleRestart` 自动重启恢复、连接被废弃后调用返回干净的"未就绪"而非崩溃。
+1. **重启 DSH 并复验诊断**：重启后在 C# 项目内调 `lsp_diagnostics`（含错误文件应返回真实诊断而非空）；再调 `workspace_diagnostics` 确认全局聚合非恒空。若仍空，日志现在会打印 pull 失败的真实 code+message（替代笼统"不支持"），按报错定位剩余触发条件。
 2. Bug G 生产配对复验（可选）：在 cwd 位于 C# 项目内的会话调 diagnostics → workspace_diagnostics，确认聚合非恒空（本会话 cwd 不在 C# 项目内，池键不匹配无法自验）。
 3. （可选）多语言化设计文档：LanguageServerRegistry 抽象。
 
