@@ -464,7 +464,8 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
       name: 'lsp_signature',
       description:
         '调用 C# 方法前确认参数列表，优于读定义。' +
-        '返回调用处的方法签名、参数说明与当前活跃参数。',
+        '返回调用处的方法签名、参数说明与当前活跃参数。' +
+        '需光标位于参数括号内；构造函数调用可能无返回（csharp-ls 限制）。',
       parameters: {
         file_path: { type: 'string' as const, description: '文件绝对路径', required: true },
         line: { type: 'integer' as const, description: '行号（0-indexed）', required: true },
@@ -593,8 +594,8 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
     defineTool({
       name: 'lsp_organize_imports',
       description:
-        '整理 C# 文件的 using 语句（添加缺失、删除未使用、按字母排序），' +
-        '返回需用编辑工具应用的编辑列表。',
+        '整理 C# 文件的 using 语句（补缺失、按字母排序），返回需用编辑工具应用的编辑列表。' +
+        '注意：csharp-ls 不删除未使用 using——清理用 lsp_diagnostics 查 CS8019 后配 lsp_code_action。',
       parameters: {
         file_path: { type: 'string' as const, description: '文件绝对路径', required: true },
       },
@@ -618,7 +619,8 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
     defineTool({
       name: 'lsp_workspace_diagnostics',
       description:
-        '提交/收尾前的 C# 全局健康检查：按文件分组汇总已打开文件的错误与警告。',
+        '提交/收尾前的 C# 全局健康检查：按文件分组汇总已探明文件的最近诊断' +
+        '（调用过 lsp_diagnostics 的文件 + 收到服务器推送的文件）。',
       parameters: {},
       isConcurrencySafe() { return true; },
       output: {
