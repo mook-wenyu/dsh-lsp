@@ -1,6 +1,6 @@
 # STATUS — dsh-lsp
 
-> 更新：2026-08-24（第二次收尾）· main @ e15d617 · CI 绿 · 158/158 本地与 CI 双绿
+> 更新：2026-08-24（第三次收尾：已部署）· 部署构建 105714c · CI 绿 · 158/158 本地与 CI 双绿
 
 ## 一、架构健康度
 
@@ -25,14 +25,20 @@
 
 ## 三、已知风险点
 
-- **部署滞后**：生产 profile 仍运行 #3d51b5b 构建——Bug G 修复与新描述需走完「allowBuilds hash 同步到 e15d617 → pnpm install --dir ~/.dsh/profiles/web → 重启 DSH」才生效。
+- ~~部署滞后~~ **已部署（2026-08-24 15:06）**：allowBuilds 键更新为 pnpm 实际解析形式（codeload tarball @105714c——git 依赖被锁文件钉在旧 hash 时需 `pnpm update <pkg>` 重解析，简单包名键对 git 依赖无效）；新实例 PID 18352 加载新构建，冒烟验证通过。后续 push 后 lockfile 仍钉 105714c，下次更新重复此流程。
 - 测试套件语义绑定 Windows 单平台（file URI ↔ 盘符路径断言等）；若未来要支持 Linux 宿主需先做跨平台化改造。
 - signature 对构造函数调用无返回、organize_imports 不删未使用：均为 csharp-ls 服务端能力边界，已写入描述与 README，无法客户端修复。
 
 ## 四、下次最该做的事
 
-1. 部署：profile allowBuilds 键换 #e15d617 → `pnpm install --dir ~/.dsh/profiles/web` → 重启 DSH → 用 diagnostics + workspace_diagnostics 复验 Bug G 修复在生产生效。
+1. Bug G 生产配对复验（可选）：在 cwd 位于 C# 项目内的会话调 diagnostics → workspace_diagnostics，确认聚合非恒空（本会话 cwd 不在 C# 项目内，池键不匹配无法自验）。
 2. （可选）多语言化设计文档：LanguageServerRegistry 抽象。
+
+## 附：2026-08-24 部署记录
+
+- allowBuilds 键三态迭代后锁定为 pnpm 打印的精确形式 `@echocore/dsh-lsp-client@https://codeload.github.com/.../tar.gz/105714c...`；`pnpm update` 重解析 + install 构建成功，symlink 由 `gi_67b4f...`（#3d51b5b）切至 `ht_84b5d1...`（105714c）。
+- 重启经分离助手完成：杀旧实例 PID 42744 → 新实例 PID 18352（15:06:17 > 构建落盘 15:04:39）→ 健康检查 ok；日志 `%TEMP%\dsh-restart-result.txt`、`%TEMP%\dsh-web-stdout.log`。
+- 冒烟（新进程内）：lsp_document_symbols(test-project/Program.cs) 符号树完整；lsp_diagnostics 干净零诊断（pull 路径正常）。
 
 ## 附：2026-08-24 行为面验收结论
 
