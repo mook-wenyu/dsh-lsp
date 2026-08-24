@@ -7,7 +7,8 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # 测试语义绑定 Windows 路径（file URI ↔ 盘符路径转换等），与部署目标一致
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
