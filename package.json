@@ -1,6 +1,7 @@
 {
   "name": "@echocore/dsh-lsp-client",
   "version": "0.1.0",
+  "packageManager": "pnpm@11.21.0",
   "description": "LSP 客户端插件（DeepSeek Harness / Cordis）：为 AI 代理提供语言服务器协议能力——悬停、跳转定义、查找引用、诊断、文档符号、调用层级",
   "type": "module",
   "main": "lib/index.js",
