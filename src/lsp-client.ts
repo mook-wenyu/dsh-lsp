@@ -244,6 +244,10 @@ export class LspClient {
       }) as { kind: 'full'; items: Diagnostic[] } | null;
 
       if (result && 'items' in result) {
+        // pull 结果写入统一诊断缓存（Bug G 回归）：workspaceDiagnostics 聚合
+        // 所有已探明文件，不依赖 push 通知是否恰好发生；干净文件写入空数组
+        // 同样成立——"已知且零诊断"也是有效的全局健康信息。
+        this.manager.updateDiagnosticsCache(uri, result.items);
         return result.items.map((d) => this.formatDiagnostic(d));
       }
     } catch {
@@ -601,7 +605,9 @@ export class LspClient {
     // 从 server-manager 获取所有缓存的诊断
     return this.manager.getAllDiagnostics().map(({ uri, diagnostics }) => ({
       filePath: this.fromUri(uri),
-      diagnostics: diagnostics.map(this.formatDiagnostic),
+      // 箭头包装绑定 this——formatDiagnostic 依赖 this.toJson，
+      // 未绑定的 map(this.formatDiagnostic) 在缓存非空时必炸（Bug G 连带修复）
+      diagnostics: diagnostics.map((d) => this.formatDiagnostic(d)),
     }));
   }
 

@@ -38,7 +38,7 @@ function createMockConnection() {
   };
 }
 
-/** 创建 mock LspServerManager（暴露 activeConnection getter + getDiagnostics）。 */
+/** 创建 mock LspServerManager（暴露 activeConnection getter + getDiagnostics/getAllDiagnostics）。 */
 function createMockManager(connection: ReturnType<typeof createMockConnection>) {
   const diagnosticsCache = new Map<string, any[]>();
   return {
@@ -47,6 +47,12 @@ function createMockManager(connection: ReturnType<typeof createMockConnection>) 
     },
     getDiagnostics(_uri: string) {
       return diagnosticsCache.get(_uri) ?? [];
+    },
+    getAllDiagnostics() {
+      return [...diagnosticsCache.entries()].map(([uri, diagnostics]) => ({ uri, diagnostics }));
+    },
+    updateDiagnosticsCache(uri: string, diagnostics: any[]) {
+      diagnosticsCache.set(uri, diagnostics);
     },
     _diagnosticsCache: diagnosticsCache,
   };
@@ -301,6 +307,32 @@ describe('LspClient', () => {
       mockConn.sendRequest.mockResolvedValueOnce(null);
       const result = await client.diagnostics('D:\\test\\File.cs');
       expect(result).toEqual([]);
+    });
+
+    it('pull 成功结果写入统一缓存，workspaceDiagnostics 可聚合（Bug G 回归锁）', async () => {
+      // 真实项目（1810 个 .cs）实测：csharp-ls 主用 pull 路径，push 通知几乎不发生，
+      // 旧实现两通路割裂导致 workspace_diagnostics 恒为空
+      mockConn.sendRequest.mockResolvedValueOnce({
+        kind: 'full',
+        items: [
+          {
+            severity: 2, // Warning
+            message: 'CS8019: 使用了不必要的 using 指令',
+            range: {
+              start: { line: 6, character: 0 },
+              end: { line: 6, character: 22 },
+            },
+            source: 'csharp',
+          },
+        ],
+      });
+
+      await client.diagnostics('D:\\test\\File.cs');
+
+      const agg = await client.workspaceDiagnostics();
+      expect(agg).toHaveLength(1);
+      expect(agg[0]!.filePath).toBe('D:\\test\\File.cs');
+      expect(agg[0]!.diagnostics).toHaveLength(1);
     });
   });
 

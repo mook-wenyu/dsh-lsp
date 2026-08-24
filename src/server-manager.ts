@@ -116,6 +116,17 @@ export class LspServerManager {
   }
 
   /**
+   * 写入/更新指定 URI 的诊断缓存。
+   *
+   * pull model（textDocument/diagnostic）结果由此进入统一缓存——
+   * 否则缓存只被 push 通知喂入，csharp-ls 主用 pull 时 workspaceDiagnostics 恒空
+   * （Bug G，2026-08-24 真实项目实测）。push 通知后到仍按最新覆盖。
+   */
+  updateDiagnosticsCache(uri: string, diagnostics: Diagnostic[]): void {
+    this._diagnosticsCache.set(uri, diagnostics);
+  }
+
+  /**
    * 启动 LSP 服务器并完成 initialize 握手。
    *
    * 如果服务器已在运行，返回已有连接。
