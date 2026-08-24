@@ -1,6 +1,6 @@
 # STATUS — dsh-lsp
 
-> 更新：2026-08-24（第四次：崩溃根因修复完成，源码+测试+lib 已重建，待 web profile 部署）· 部署构建仍 105714c · 162/162 本地全绿
+> 更新：2026-08-24（第四次：崩溃根因修复完成并已部署到 web profile，待 DSH 重启加载）· 部署构建 5d84c4f · 162/162 本地全绿
 
 ## 一、架构健康度
 
@@ -32,19 +32,20 @@
   2. 所有 fire-and-forget `sendNotification` 加 `.catch(() => {})`，瞬时/致命写入失败不会变成未处理拒绝使宿主崩溃。
   3. `dispose()` 的 `connection.dispose()` 包进 try/catch（原在 try 外，死流可抛）。
   4. `scheduleRestart()` 幂等（exit 与 onClose 双触发避免拉起多个 csharp-ls）。
-- **回归测试**：`__tests__/server-manager.test.ts`（子进程退出后连接废弃、握手 initialized 通知失败不抛未处理拒绝、dispose 时连接已销毁不异常）、`__tests__/lsp-client.test.ts`（didOpen 通知失败不抛未处理拒绝）。162 测试全绿，`tsc --noEmit` 通过；`lib/` 已 `npm run build` 重建，**尚未部署到 web profile**。
+- **回归测试**：`__tests__/server-manager.test.ts`（子进程退出后连接废弃、握手 initialized 通知失败不抛未处理拒绝、dispose 时连接已销毁不异常）、`__tests__/lsp-client.test.ts`（didOpen 通知失败不抛未处理拒绝）。162 测试全绿，`tsc --noEmit` 通过。
+- **部署（2026-08-24）**：commit `5d84c4f` 已 push 至 `mook-wenyu/dsh-lsp`；web profile lockfile 前进至 `5d84c4f`，`pnpm-workspace.yaml` 的 allowBuilds 键同步更新为新 codeload hash；`dsh plugin --profile web install` 已对账 bundles，安装产物 `lib/` 含全部 4 处 `.catch` 守卫。运行中的 DSH 进程**需重启**方可加载新构建。
 - 接口契约变化：无。
 
 ## 三、已知风险点
 
-- **部署滞后（本次崩溃修复未部署）**：lib/ 已重建但 web profile 仍跑旧构建（105714c）；修复经 `dsh plugin --profile web install` 对账回填 bundles 后方可生效。**禁止裸 `pnpm install`**（不触发 bundles 对账，会静默丢失插件）。
+- **已部署（commit 5d84c4f）**：web profile 依赖前进至新提交，`pnpm-workspace.yaml` 的 allowBuilds 键同步更新为 `5d84c4f` 的 codeload hash，`dsh plugin --profile web install` 已完成 bundles 对账；安装产物 `lib/` 含全部 4 处 `.catch` 守卫。运行中的 DSH 进程**需重启**方可加载新构建（安装命令不热重载进程）。**禁止裸 `pnpm install`**（不触发 bundles 对账，会静默丢失插件）。
 - ~~部署滞后~~ **已部署（2026-08-24 15:06）**：allowBuilds 键更新为 pnpm 实际解析形式（codeload tarball @105714c——git 依赖被锁文件钉在旧 hash 时需 `pnpm update <pkg>` 重解析，简单包名键对 git 依赖无效）；新实例 PID 18352 加载新构建，冒烟验证通过。后续 push 后 lockfile 仍钉 105714c，下次更新重复此流程。
 - 测试套件语义绑定 Windows 单平台（file URI ↔ 盘符路径断言等）；若未来要支持 Linux 宿主需先做跨平台化改造。
 - signature 对构造函数调用无返回、organize_imports 不删未使用：均为 csharp-ls 服务端能力边界，已写入描述与 README，无法客户端修复。
 
 ## 四、下次最该做的事
 
-1. **部署本次崩溃修复**：经 `dsh plugin --profile web install` 重新构建并回填 bundles（禁用裸 `pnpm install`），重启 DSH 后复验——触发一次 lsp_* 调用使 csharp-ls 在其后崩溃（或手动 kill 子进程），确认宿主不再 `fatal load failure`，且 csharp-ls 自动重启恢复。
+1. **重启 DSH 加载新构建并复验崩溃修复**：重启 web profile 后触发一次 `lsp_*` 调用使 csharp-ls 启动，再手动 kill 该子进程，确认宿主不再 `fatal load failure`（ERR_STREAM_DESTROYED），且 csharp-ls 经 `scheduleRestart` 自动重启恢复、连接被废弃后调用返回干净的"未就绪"而非崩溃。
 2. Bug G 生产配对复验（可选）：在 cwd 位于 C# 项目内的会话调 diagnostics → workspace_diagnostics，确认聚合非恒空（本会话 cwd 不在 C# 项目内，池键不匹配无法自验）。
 3. （可选）多语言化设计文档：LanguageServerRegistry 抽象。
 
