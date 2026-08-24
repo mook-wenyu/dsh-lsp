@@ -40,13 +40,16 @@ function createMockConnection() {
   };
 }
 
-/** 创建 mock LspServerManager（暴露 activeConnection getter + getDiagnostics/getAllDiagnostics）。 */
+/** 创建 mock LspServerManager（暴露 activeConnection getter + getDiagnostics/getAllDiagnostics + 能力标志）。 */
 function createMockManager(connection: ReturnType<typeof createMockConnection>) {
   const diagnosticsCache = new Map<string, any[]>();
   return {
     get activeConnection() {
       return connection;
     },
+    // 默认按 csharp-ls 0.26 行为：支持 pull 与工作区 pull
+    supportsPull: true,
+    supportsWorkspaceDiagnostic: true,
     getDiagnostics(_uri: string) {
       return diagnosticsCache.get(_uri) ?? [];
     },
@@ -85,7 +88,7 @@ describe('LspClient', () => {
         },
       });
 
-      const result = await client.hover('D:\\test\\File.cs', 10, 5);
+      const result = await client.hover('d:\\test\\File.cs', 10, 5);
 
       // 精确匹配：多出任何键（如 range）都违反宿主无损 JSON/输出 schema 契约
       expect(result).toEqual({
@@ -97,7 +100,7 @@ describe('LspClient', () => {
         'textDocument/didOpen',
         expect.objectContaining({
           textDocument: expect.objectContaining({
-            uri: 'file:///D:/test/File.cs',
+            uri: 'file:///d:/test/File.cs',
           }),
         }),
       );
@@ -105,7 +108,7 @@ describe('LspClient', () => {
       expect(mockConn.sendRequest).toHaveBeenCalledWith(
         'textDocument/hover',
         expect.objectContaining({
-          textDocument: { uri: 'file:///D:/test/File.cs' },
+          textDocument: { uri: 'file:///d:/test/File.cs' },
           position: { line: 10, character: 5 },
         }),
       );
@@ -117,7 +120,7 @@ describe('LspClient', () => {
         range: undefined,
       });
 
-      const result = await client.hover('D:\\test\\File.cs', 0, 0);
+      const result = await client.hover('d:\\test\\File.cs', 0, 0);
       expect(result.found).toBe(true);
       expect(result.summary).toBe('string 类型');
     });
@@ -131,7 +134,7 @@ describe('LspClient', () => {
         range: undefined,
       });
 
-      const result = await client.hover('D:\\test\\File.cs', 0, 0);
+      const result = await client.hover('d:\\test\\File.cs', 0, 0);
       expect(result.found).toBe(true);
       expect(result.summary).toBe('**签名**\n补充说明');
     });
@@ -139,19 +142,19 @@ describe('LspClient', () => {
     it('found=false: LSP server 返回 null 时返回未找到', async () => {
       mockConn.sendRequest.mockResolvedValueOnce(null);
 
-      const result = await client.hover('D:\\test\\File.cs', 99, 0);
+      const result = await client.hover('d:\\test\\File.cs', 99, 0);
       expect(result).toEqual({ found: false, summary: '未找到类型信息' });
     });
   });
 
   // ─── definition() ─────────────────────────────────────
   describe('definition()', () => {
-    const testFile = 'D:\\test\\File.cs';
-    const testUri = 'file:///D:/test/File.cs';
+    const testFile = 'd:\\test\\File.cs';
+    const testUri = 'file:///d:/test/File.cs';
 
     it('处理单个 Location 返回', async () => {
       mockConn.sendRequest.mockResolvedValueOnce({
-        uri: 'file:///D:/src/Impl.cs',
+        uri: 'file:///d:/src/Impl.cs',
         range: {
           start: { line: 20, character: 0 },
           end: { line: 25, character: 1 },
@@ -160,32 +163,32 @@ describe('LspClient', () => {
 
       const result = await client.definition(testFile, 10, 5);
       expect(result).toHaveLength(1);
-      expect(result[0]!.filePath).toBe('D:\\src\\Impl.cs');
+      expect(result[0]!.filePath).toBe('d:\\src\\Impl.cs');
       expect(result[0]!.range.start).toEqual({ line: 20, character: 0 });
     });
 
     it('处理 Location[] 数组返回', async () => {
       mockConn.sendRequest.mockResolvedValueOnce([
         {
-          uri: 'file:///D:/src/A.cs',
+          uri: 'file:///d:/src/A.cs',
           range: { start: { line: 1, character: 0 }, end: { line: 1, character: 5 } },
         },
         {
-          uri: 'file:///D:/src/B.cs',
+          uri: 'file:///d:/src/B.cs',
           range: { start: { line: 2, character: 0 }, end: { line: 2, character: 5 } },
         },
       ]);
 
       const result = await client.definition(testFile, 10, 5);
       expect(result).toHaveLength(2);
-      expect(result[0]!.filePath).toBe('D:\\src\\A.cs');
-      expect(result[1]!.filePath).toBe('D:\\src\\B.cs');
+      expect(result[0]!.filePath).toBe('d:\\src\\A.cs');
+      expect(result[1]!.filePath).toBe('d:\\src\\B.cs');
     });
 
     it('处理 LocationLink[] 数组返回（使用 targetUri/targetRange）', async () => {
       mockConn.sendRequest.mockResolvedValueOnce([
         {
-          targetUri: 'file:///D:/src/Target.cs',
+          targetUri: 'file:///d:/src/Target.cs',
           targetRange: {
             start: { line: 30, character: 0 },
             end: { line: 35, character: 1 },
@@ -204,7 +207,7 @@ describe('LspClient', () => {
       const result = await client.definition(testFile, 10, 5);
       expect(result).toHaveLength(1);
       // LocationLink 使用 targetUri 和 targetRange
-      expect(result[0]!.filePath).toBe('D:\\src\\Target.cs');
+      expect(result[0]!.filePath).toBe('d:\\src\\Target.cs');
       expect(result[0]!.range.start).toEqual({ line: 30, character: 0 });
     });
 
@@ -220,19 +223,19 @@ describe('LspClient', () => {
     it('返回 LspLocation[] 列表', async () => {
       mockConn.sendRequest.mockResolvedValueOnce([
         {
-          uri: 'file:///D:/src/Caller1.cs',
+          uri: 'file:///d:/src/Caller1.cs',
           range: { start: { line: 5, character: 10 }, end: { line: 5, character: 15 } },
         },
         {
-          uri: 'file:///D:/src/Caller2.cs',
+          uri: 'file:///d:/src/Caller2.cs',
           range: { start: { line: 12, character: 3 }, end: { line: 12, character: 8 } },
         },
       ]);
 
-      const result = await client.references('D:\\test\\File.cs', 10, 5);
+      const result = await client.references('d:\\test\\File.cs', 10, 5);
       expect(result).toHaveLength(2);
-      expect(result[0]!.filePath).toBe('D:\\src\\Caller1.cs');
-      expect(result[1]!.filePath).toBe('D:\\src\\Caller2.cs');
+      expect(result[0]!.filePath).toBe('d:\\src\\Caller1.cs');
+      expect(result[1]!.filePath).toBe('d:\\src\\Caller2.cs');
       // 验证请求参数
       expect(mockConn.sendRequest).toHaveBeenCalledWith(
         'textDocument/references',
@@ -244,13 +247,13 @@ describe('LspClient', () => {
 
     it('返回 null 时返回空数组', async () => {
       mockConn.sendRequest.mockResolvedValueOnce(null);
-      const result = await client.references('D:\\test\\File.cs', 0, 0);
+      const result = await client.references('d:\\test\\File.cs', 0, 0);
       expect(result).toEqual([]);
     });
 
     it('includeDeclaration=false 时传递正确参数', async () => {
       mockConn.sendRequest.mockResolvedValueOnce([]);
-      await client.references('D:\\test\\File.cs', 0, 0, false);
+      await client.references('d:\\test\\File.cs', 0, 0, false);
       expect(mockConn.sendRequest).toHaveBeenCalledWith(
         'textDocument/references',
         expect.objectContaining({
@@ -287,7 +290,7 @@ describe('LspClient', () => {
         ],
       });
 
-      const result = await client.diagnostics('D:\\test\\File.cs');
+      const result = await client.diagnostics('d:\\test\\File.cs');
       expect(result).toHaveLength(2);
       expect(result[0]!.severity).toBe('error');
       expect(result[0]!.message).toBe('找不到类型或命名空间 "Foo"');
@@ -299,7 +302,7 @@ describe('LspClient', () => {
       // 模拟 LSP server 不支持 textDocument/diagnostic（抛出 Method not found）
       mockConn.sendRequest.mockRejectedValueOnce(new Error('Method not found'));
 
-      const result = await client.diagnostics('D:\\test\\File.cs');
+      const result = await client.diagnostics('d:\\test\\File.cs');
       expect(result).toEqual([]);
       // didOpen 通知仍然发送了
       expect(mockConn.sendNotification).toHaveBeenCalled();
@@ -307,7 +310,7 @@ describe('LspClient', () => {
 
     it('返回 null 结果时返回空数组', async () => {
       mockConn.sendRequest.mockResolvedValueOnce(null);
-      const result = await client.diagnostics('D:\\test\\File.cs');
+      const result = await client.diagnostics('d:\\test\\File.cs');
       expect(result).toEqual([]);
     });
 
@@ -329,12 +332,50 @@ describe('LspClient', () => {
         ],
       });
 
-      await client.diagnostics('D:\\test\\File.cs');
+      await client.diagnostics('d:\\test\\File.cs');
 
       const agg = await client.workspaceDiagnostics();
       expect(agg).toHaveLength(1);
-      expect(agg[0]!.filePath).toBe('D:\\test\\File.cs');
+      expect(agg[0]!.filePath).toBe('d:\\test\\File.cs');
       expect(agg[0]!.diagnostics).toHaveLength(1);
+    });
+
+    it('diagnostics() 以归一化（小写盘符）URI 发送 pull 请求', async () => {
+      mockConn.sendRequest.mockResolvedValueOnce({ kind: 'full', items: [] });
+      await client.diagnostics('d:\\test\\File.cs');
+      // 不同工具调用传入不同大小写路径时，归一化保证 pull 请求 URI 与 didOpen 一致
+      expect(mockConn.sendRequest).toHaveBeenCalledWith('textDocument/diagnostic', {
+        textDocument: { uri: 'file:///d:/test/File.cs' },
+      });
+    });
+
+    it('workspaceDiagnostics() 走 workspace/diagnostic 拉取并聚合（csharp-ls pull 通道）', async () => {
+      const fileDiags = [
+        {
+          severity: 1,
+          message: 'CS1002: ; 预期',
+          range: { start: { line: 1, character: 0 }, end: { line: 1, character: 1 } },
+          source: 'csharp',
+        },
+      ];
+      mockConn.sendRequest.mockImplementation((method: string) => {
+        if (method === 'textDocument/diagnostic') {
+          return Promise.resolve({ kind: 'full', items: fileDiags });
+        }
+        if (method === 'workspace/diagnostic') {
+          return Promise.resolve({
+            items: [{ uri: 'file:///d:/test/File.cs', kind: 'full', diagnostics: fileDiags }],
+          });
+        }
+        return Promise.resolve(null);
+      });
+
+      await client.diagnostics('d:\\test\\File.cs');
+      const agg = await client.workspaceDiagnostics();
+      expect(agg).toHaveLength(1);
+      expect(agg[0]!.filePath).toBe('d:\\test\\File.cs');
+      expect(agg[0]!.diagnostics).toHaveLength(1);
+      expect(agg[0]!.diagnostics[0]!.message).toBe('CS1002: ; 预期');
     });
   });
 
@@ -364,7 +405,7 @@ describe('LspClient', () => {
         },
       ]);
 
-      const result = await client.documentSymbols('D:\\test\\File.cs');
+      const result = await client.documentSymbols('d:\\test\\File.cs');
       expect(result).toHaveLength(1);
 
       // 顶级符号 depth=0
@@ -389,7 +430,7 @@ describe('LspClient', () => {
 
     it('返回 null 时返回空数组', async () => {
       mockConn.sendRequest.mockResolvedValueOnce(null);
-      const result = await client.documentSymbols('D:\\test\\File.cs');
+      const result = await client.documentSymbols('d:\\test\\File.cs');
       expect(result).toEqual([]);
     });
 
@@ -403,7 +444,7 @@ describe('LspClient', () => {
         },
       ]);
 
-      const result = await client.documentSymbols('D:\\test\\File.cs');
+      const result = await client.documentSymbols('d:\\test\\File.cs');
       expect(result[0]!.kind).toBe('kind_99');
     });
   });
@@ -417,7 +458,7 @@ describe('LspClient', () => {
           {
             name: 'Calculate',
             kind: 6, // Method
-            uri: 'file:///D:/test/File.cs',
+            uri: 'file:///d:/test/File.cs',
             range: { start: { line: 10, character: 0 }, end: { line: 15, character: 1 } },
             selectionRange: { start: { line: 10, character: 4 }, end: { line: 10, character: 13 } },
           },
@@ -428,7 +469,7 @@ describe('LspClient', () => {
             from: {
               name: 'Main',
               kind: 6,
-              uri: 'file:///D:/test/Program.cs',
+              uri: 'file:///d:/test/Program.cs',
               range: { start: { line: 0, character: 0 }, end: { line: 10, character: 1 } },
               selectionRange: { start: { line: 0, character: 4 }, end: { line: 0, character: 8 } },
             },
@@ -443,7 +484,7 @@ describe('LspClient', () => {
             to: {
               name: 'Helper',
               kind: 12, // Function
-              uri: 'file:///D:/test/Helper.cs',
+              uri: 'file:///d:/test/Helper.cs',
               range: { start: { line: 20, character: 0 }, end: { line: 25, character: 1 } },
               selectionRange: { start: { line: 20, character: 4 }, end: { line: 20, character: 10 } },
             },
@@ -453,24 +494,24 @@ describe('LspClient', () => {
           },
         ]);
 
-      const result = await client.callHierarchy('D:\\test\\File.cs', 10, 5);
+      const result = await client.callHierarchy('d:\\test\\File.cs', 10, 5);
 
       expect(result.incoming).toHaveLength(1);
       expect(result.incoming[0]!.from.name).toBe('Main');
       expect(result.incoming[0]!.from.kind).toBe('方法');
-      expect(result.incoming[0]!.from.filePath).toBe('D:\\test\\Program.cs');
+      expect(result.incoming[0]!.from.filePath).toBe('d:\\test\\Program.cs');
       expect(result.incoming[0]!.ranges[0]!.start.line).toBe(5);
 
       expect(result.outgoing).toHaveLength(1);
       expect(result.outgoing[0]!.to.name).toBe('Helper');
       expect(result.outgoing[0]!.to.kind).toBe('函数');
-      expect(result.outgoing[0]!.to.filePath).toBe('D:\\test\\Helper.cs');
+      expect(result.outgoing[0]!.to.filePath).toBe('d:\\test\\Helper.cs');
     });
 
     it('prepare 返回 null 时返回空结果（不调用 incoming/outgoing）', async () => {
       mockConn.sendRequest.mockResolvedValueOnce(null);
 
-      const result = await client.callHierarchy('D:\\test\\File.cs', 10, 5);
+      const result = await client.callHierarchy('d:\\test\\File.cs', 10, 5);
       expect(result).toEqual({ incoming: [], outgoing: [] });
       // 只调用了 prepare，没有调用 incoming/outgoing
       expect(mockConn.sendRequest).toHaveBeenCalledTimes(1);
@@ -479,7 +520,7 @@ describe('LspClient', () => {
     it('prepare 返回空数组时返回空结果', async () => {
       mockConn.sendRequest.mockResolvedValueOnce([]);
 
-      const result = await client.callHierarchy('D:\\test\\File.cs', 10, 5);
+      const result = await client.callHierarchy('d:\\test\\File.cs', 10, 5);
       expect(result).toEqual({ incoming: [], outgoing: [] });
       expect(mockConn.sendRequest).toHaveBeenCalledTimes(1);
     });
@@ -489,13 +530,13 @@ describe('LspClient', () => {
   describe('toUri() / fromUri() Windows 路径转换', () => {
     it('toUri: Windows 反斜杠路径转 file:// URI', () => {
       const toUri = (client as any).toUri.bind(client) as (p: string) => string;
-      expect(toUri('D:\\test\\File.cs')).toBe('file:///D:/test/File.cs');
-      expect(toUri('C:\\Users\\dev\\proj\\src\\Main.ts')).toBe('file:///C:/Users/dev/proj/src/Main.ts');
+      expect(toUri('d:\\test\\File.cs')).toBe('file:///d:/test/File.cs');
+      expect(toUri('C:\\Users\\dev\\proj\\src\\Main.ts')).toBe('file:///c:/Users/dev/proj/src/Main.ts');
     });
 
     it('fromUri: file:// URI 转 Windows 反斜杠路径', () => {
       const fromUri = (client as any).fromUri.bind(client) as (u: string) => string;
-      expect(fromUri('file:///D:/test/File.cs')).toBe('D:\\test\\File.cs');
+      expect(fromUri('file:///d:/test/File.cs')).toBe('d:\\test\\File.cs');
       expect(fromUri('file:///C:/Users/dev/proj/src/Main.ts')).toBe('C:\\Users\\dev\\proj\\src\\Main.ts');
     });
 
@@ -503,7 +544,7 @@ describe('LspClient', () => {
       const toUri = (client as any).toUri.bind(client) as (p: string) => string;
       const fromUri = (client as any).fromUri.bind(client) as (u: string) => string;
 
-      const windowsPath = 'D:\\Projects\\MyApp\\src\\Program.cs';
+      const windowsPath = 'd:\\Projects\\MyApp\\src\\Program.cs';
       expect(fromUri(toUri(windowsPath))).toBe(windowsPath);
     });
   });
@@ -526,7 +567,7 @@ describe('LspClient', () => {
     };
 
     it('C# → csharp', async () => {
-      expect(await getLanguageIdFor('D:\\test\\Program.cs')).toBe('csharp');
+      expect(await getLanguageIdFor('d:\\test\\Program.cs')).toBe('csharp');
     });
 
     it('TypeScript → typescript', async () => {
@@ -560,7 +601,7 @@ describe('LspClient', () => {
       const onReject = (e: unknown) => rejections.push(e);
       process.on('unhandledRejection', onReject);
       try {
-        const result = await client.hover('D:\\test\\File.cs', 0, 0);
+        const result = await client.hover('d:\\test\\File.cs', 0, 0);
         // 排空微任务，让潜在未处理拒绝浮现
         await new Promise((r) => setImmediate(r));
         expect(result).toBeDefined();
@@ -571,3 +612,5 @@ describe('LspClient', () => {
     });
   });
 });
+
+

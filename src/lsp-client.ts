@@ -35,6 +35,7 @@ import {
   CompletionItemKind,
 } from 'vscode-languageserver-protocol';
 import type { LspServerManager } from './server-manager.js';
+import { normalizeUri } from './server-manager.js';
 import type { LspLocation } from './types.js';
 
 /** 符号类型中文映射，用于紧凑展示。 */
@@ -79,8 +80,8 @@ export class LspClient {
   /** 文件同步缓存：filePath → { version, text }，避免重复 didOpen 违反 LSP 协议。 */
   private readonly fileCache = new Map<string, { version: number; text: string }>();
 
-  /** 标记 pull model 诊断是否已报告不支持，避免重复警告日志。 */
-  private _diagnosticsPullUnsupported = false;
+  /** 标记 pull 诊断失败的真实错误是否已记录一次，避免重复警告日志。 */
+  private _diagnosticsPullLogged = false;
 
   /** 获取活跃连接，未就绪时抛出。 */
   private get connection(): MessageConnection {
@@ -239,30 +240,40 @@ export class LspClient {
    */
   async diagnostics(filePath: string): Promise<DiagnosticResult[]> {
     this.syncDocument(filePath);
-    const uri = this.toUri(filePath);
+    const uri = normalizeUri(this.toUri(filePath));
 
-    // 优先尝试 pull model（LSP 3.17+，更完整）
-    try {
-      const result = await this.connection.sendRequest('textDocument/diagnostic', {
-        textDocument: { uri },
-      }) as { kind: 'full'; items: Diagnostic[] } | null;
+    // csharp-ls 等支持 pull 的服务器：pull 是唯一权威诊断通道
+    // （声明 pull 能力后服务器不再 push，原 push 缓存恒空，回退无意义）。
+    if (this.manager.supportsPull) {
+      try {
+        const result = await this.connection.sendRequest('textDocument/diagnostic', {
+          textDocument: { uri },
+        }) as { kind: 'full'; items: Diagnostic[] } | null;
 
-      if (result && 'items' in result) {
-        // pull 结果写入统一诊断缓存（Bug G 回归）：workspaceDiagnostics 聚合
-        // 所有已探明文件，不依赖 push 通知是否恰好发生；干净文件写入空数组
-        // 同样成立——"已知且零诊断"也是有效的全局健康信息。
-        this.manager.updateDiagnosticsCache(uri, result.items);
-        return result.items.map((d) => this.formatDiagnostic(d));
-      }
-    } catch {
-      // pull model 不支持，回退到 push 缓存
-      if (!this._diagnosticsPullUnsupported) {
-        this._diagnosticsPullUnsupported = true;
-        console.warn('[dsh-lsp-client] textDocument/diagnostic (pull model) 不支持，回退到 push 缓存。');
+        if (result && 'items' in result) {
+          // pull 结果写入统一诊断缓存（Bug G 回归）：workspaceDiagnostics 聚合
+          // 所有已探明文件；干净文件写入空数组同样成立。
+          this.manager.updateDiagnosticsCache(uri, result.items);
+          return result.items.map((d) => this.formatDiagnostic(d));
+        }
+        // 返回空报告（kind:'full' 但无 items）
+        return [];
+      } catch (err) {
+        // pull 抛错（项目未加载 / 连接未就绪 / URI 失配等）：记录真实错误，
+        // 回退到 push 缓存（对 csharp-ls 恒空，对 pull-only 服务器才有效）。
+        if (!this._diagnosticsPullLogged) {
+          this._diagnosticsPullLogged = true;
+          const code = (err as { code?: unknown })?.code;
+          const msg = (err as { message?: string })?.message ?? String(err);
+          console.warn(
+            `[dsh-lsp-client] textDocument/diagnostic 失败（pull 为主，不再回退空 push 缓存）: code=${code ?? '?'} ${msg}`,
+          );
+        }
+        return this.manager.getDiagnostics(uri).map((d) => this.formatDiagnostic(d));
       }
     }
 
-    // 回退：读取 server-manager 的 push 诊断缓存
+    // pull-only 服务器：读取 push 诊断缓存
     return this.manager.getDiagnostics(uri).map((d) => this.formatDiagnostic(d));
   }
 
@@ -606,7 +617,35 @@ export class LspClient {
    * 用于全局代码健康概览。
    */
   async workspaceDiagnostics(): Promise<WorkspaceDiagnosticResult[]> {
-    // 从 server-manager 获取所有缓存的诊断
+    // 支持工作区 pull 的服务器：用 workspace/diagnostic 拉取全局诊断并刷新缓存，
+    // 再统一从缓存聚合（与单文件 pull 共用归一化键，避免大小写失配）。
+    // 对 csharp-ls：其声明 pull 能力后不 push，旧实现直接读 push 缓存会恒空（Bug G 同源）。
+    if (this.manager.supportsWorkspaceDiagnostic) {
+      try {
+        const report = (await this.connection.sendRequest('workspace/diagnostic', {
+          identifier: 'dsh-lsp-client',
+        })) as
+          | { items?: Array<{ uri?: string; kind?: string; diagnostics?: Diagnostic[] }>; relatedDocuments?: Record<string, { kind?: string; diagnostics?: Diagnostic[] }> }
+          | null;
+
+        for (const it of report?.items ?? []) {
+          // 'unchanged' 项复用上一轮结果，不覆盖缓存
+          if (it?.kind === 'unchanged' || !it?.uri) continue;
+          this.manager.updateDiagnosticsCache(normalizeUri(it.uri), it.diagnostics ?? []);
+        }
+        const related = report?.relatedDocuments;
+        if (related && typeof related === 'object') {
+          for (const [u, rd] of Object.entries(related)) {
+            if ((rd as { kind?: string })?.kind === 'unchanged') continue;
+            const rdDiags = (rd as { diagnostics?: Diagnostic[] })?.diagnostics;
+            if (Array.isArray(rdDiags)) this.manager.updateDiagnosticsCache(normalizeUri(u), rdDiags);
+          }
+        }
+      } catch {
+        // 拉取失败，回退已有缓存
+      }
+    }
+
     return this.manager.getAllDiagnostics().map(({ uri, diagnostics }) => ({
       filePath: this.fromUri(uri),
       // 箭头包装绑定 this——formatDiagnostic 依赖 this.toJson，
@@ -617,9 +656,9 @@ export class LspClient {
 
   // ─── 辅助方法 ────────────────────────────────────────────
 
-  /** 文件路径 → file:// URI。 */
+  /** 文件路径 → file:// URI（经归一化，Windows 小写盘符，消除大小写失配）。 */
   private toUri(filePath: string): string {
-    return `file:///${filePath.replace(/\\/g, '/')}`;
+    return normalizeUri(`file:///${filePath.replace(/\\/g, '/')}`);
   }
 
   /** file:// URI → 文件路径。使用 URL 对象进行健壮解析。 */

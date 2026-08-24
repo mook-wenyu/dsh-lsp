@@ -35,6 +35,25 @@ const RESTART = {
   MAX_CONSECUTIVE_FAILURES: 5,
 } as const;
 
+/**
+ * 规范化 URI，用于诊断缓存键与 pull 请求。
+ *
+ * Windows 上统一小写盘符（file:///D:/x → file:///d:/x）。实测：csharp-ls 按客户端
+ * 传入的 URI 原样登记文档，若 didOpen 与后续 textDocument/diagnostic 的 URI 盘符大小写
+ * 不一致（例如不同工具调用传入不同大小写的路径），pull 请求会失配返回空诊断。
+ * 全链路统一走归一化 URI 可消除该失配。
+ */
+export function normalizeUri(uri: string): string {
+  if (process.platform !== 'win32') return uri;
+  try {
+    const u = new URL(uri);
+    u.pathname = u.pathname.replace(/^\/([a-zA-Z]):/, (_m, d: string) => `/${d.toLowerCase()}:`);
+    return u.toString();
+  } catch {
+    return uri.replace(/^file:\/\/\/([a-zA-Z]):/, (_m, d: string) => `file:///${d.toLowerCase()}:`);
+  }
+}
+
 /** LSP 服务器管理器配置。 */
 export interface ServerManagerOptions {
   /** LSP server 可执行文件路径或命令名。默认 'csharp-ls'。 */
@@ -77,6 +96,10 @@ export class LspServerManager {
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private _capabilities: ServerCapabilities | null = null;
   private _serverInfo: { name: string; version?: string } | null = null;
+  /** 服务器是否支持 pull 诊断（LSP 3.17 textDocument/diagnostic）。csharp-ls 0.26 支持。 */
+  private _supportsPull = false;
+  /** 服务器是否支持工作区级 pull 诊断（workspace/diagnostic）。 */
+  private _supportsWorkspaceDiagnostic = false;
 
   /** push 诊断缓存：uri → Diagnostic[]。由 textDocument/publishDiagnostics 通知更新。 */
   private _diagnosticsCache = new Map<string, Diagnostic[]>();
@@ -100,14 +123,24 @@ export class LspServerManager {
     return this._serverInfo;
   }
 
+  /** 服务器是否支持 pull 诊断（textDocument/diagnostic）。 */
+  get supportsPull(): boolean {
+    return this._supportsPull;
+  }
+
+  /** 服务器是否支持工作区级 pull 诊断（workspace/diagnostic）。 */
+  get supportsWorkspaceDiagnostic(): boolean {
+    return this._supportsWorkspaceDiagnostic;
+  }
+
   /** 活跃的 JSON-RPC 连接（ready 状态后可用）。 */
   get activeConnection(): MessageConnection | null {
     return this.connection;
   }
 
-  /** 获取指定 URI 的 push 诊断缓存。 */
+  /** 获取指定 URI 的诊断缓存（键经归一化，消除大小写失配）。 */
   getDiagnostics(uri: string): Diagnostic[] {
-    return this._diagnosticsCache.get(uri) ?? [];
+    return this._diagnosticsCache.get(normalizeUri(uri)) ?? [];
   }
 
   /** 获取所有缓存的诊断（按 URI 分组）。用于 workspaceDiagnostics。 */
@@ -116,14 +149,14 @@ export class LspServerManager {
   }
 
   /**
-   * 写入/更新指定 URI 的诊断缓存。
+   * 写入/更新指定 URI 的诊断缓存（键经归一化）。
    *
-   * pull model（textDocument/diagnostic）结果由此进入统一缓存——
-   * 否则缓存只被 push 通知喂入，csharp-ls 主用 pull 时 workspaceDiagnostics 恒空
-   * （Bug G，2026-08-24 真实项目实测）。push 通知后到仍按最新覆盖。
+   * pull model（textDocument/diagnostic / workspace/diagnostic）结果由此进入统一缓存——
+   * csharp-ls 主用 pull 时 push 通知几乎不发生，旧实现两通路割裂导致 workspaceDiagnostics
+   * 恒空（Bug G，2026-08-24 真实项目实测）。pull 成功结果写入统一缓存同样成立。
    */
   updateDiagnosticsCache(uri: string, diagnostics: Diagnostic[]): void {
-    this._diagnosticsCache.set(uri, diagnostics);
+    this._diagnosticsCache.set(normalizeUri(uri), diagnostics);
   }
 
   /**
@@ -238,10 +271,11 @@ export class LspServerManager {
         this.log('error', `JSON-RPC 连接错误: ${err}`);
       });
 
-      // 监听 push 诊断通知（csharp-ls 默认推送模式），
-      // 缓存到 _diagnosticsCache 供 LspClient.diagnostics() 读取。
+      // 监听 push 诊断通知（pull-only 服务器的兜底通道；csharp-ls 声明 pull 能力后
+      // 不再推送，此时缓存恒空，诊断改由 pull 请求获取）。
+      // 键经归一化，避免服务器推送 URI 与查询 URI 大小写不一致导致缓存失配。
       connection.onNotification('textDocument/publishDiagnostics', (params: PublishDiagnosticsParams) => {
-        this._diagnosticsCache.set(params.uri, params.diagnostics);
+        this._diagnosticsCache.set(normalizeUri(params.uri), params.diagnostics);
       });
 
       // 必须在 initialize 请求前启动 JSON-RPC 读取循环；否则真实连接会抛出
@@ -309,6 +343,19 @@ export class LspServerManager {
 
     this._capabilities = result.capabilities;
     this._serverInfo = result.serverInfo ?? null;
+
+    // 探测服务器诊断能力（LSP 3.17）：决定 diagnostics()/workspaceDiagnostics() 走 pull 还是 push。
+    // csharp-ls 0.26 声明 diagnosticProvider 且 workspaceDiagnostics=true。
+    const caps = result.capabilities as ServerCapabilities & {
+      diagnosticProvider?: boolean | { workspaceDiagnostics?: boolean };
+    };
+    this._supportsPull = !!(
+      caps?.diagnosticProvider || (caps as any)?.textDocument?.diagnostic
+    );
+    this._supportsWorkspaceDiagnostic = !!(
+      caps?.diagnosticProvider &&
+      (caps.diagnosticProvider === true || (caps.diagnosticProvider as any)?.workspaceDiagnostics)
+    );
 
     // initialized 通知（无需等待响应）。fire-and-forget 写入失败（如流已销毁）
     // 必须吞掉，否则成为未处理拒绝使宿主进程崩溃。

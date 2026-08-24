@@ -18,7 +18,10 @@ let rejectNotifications = false;
 vi.mock('vscode-jsonrpc/node.js', () => ({
   createMessageConnection: vi.fn(() => ({
     sendRequest: vi.fn().mockResolvedValue({
-      capabilities: { textDocument: { hover: {} } },
+      capabilities: {
+        textDocument: { hover: {} },
+        diagnosticProvider: { workspaceDiagnostics: true },
+      },
       serverInfo: { name: 'mock-csharp-ls', version: '0.1.0' },
     }),
     sendNotification: vi.fn(() =>
@@ -194,5 +197,27 @@ describe('LspServerManager', () => {
     await manager.start();
     await expect(manager.dispose()).resolves.toBeUndefined();
     expect(manager.currentState).toBe('disposed');
+  });
+
+  it('initialize 后 supportsPull/supportsWorkspaceDiagnostic 反映服务器能力', async () => {
+    const { LspServerManager } = await import('../src/server-manager.js');
+    const manager = new LspServerManager(createTestOptions());
+    await manager.start();
+    expect(manager.supportsPull).toBe(true);
+    expect(manager.supportsWorkspaceDiagnostic).toBe(true);
+  });
+
+  it('normalizeUri 在 Windows 上统一小写盘符', async () => {
+    const { normalizeUri } = await import('../src/server-manager.js');
+    if (process.platform !== 'win32') {
+      // 非 Windows 平台不做大小写归一
+      expect(normalizeUri('file:///D:/x/Y.cs')).toBe('file:///D:/x/Y.cs');
+      return;
+    }
+    expect(normalizeUri('file:///D:/x/Y.cs')).toBe('file:///d:/x/Y.cs');
+    // 已小写保持不变
+    expect(normalizeUri('file:///d:/x/Y.cs')).toBe('file:///d:/x/Y.cs');
+    // 非 file URI 不报错
+    expect(normalizeUri('untitled:Untitled-1')).toBe('untitled:Untitled-1');
   });
 });
