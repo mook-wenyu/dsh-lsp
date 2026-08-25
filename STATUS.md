@@ -1,6 +1,6 @@
 # STATUS — dsh-lsp
 
-> 更新：2026-08-26（第六批：消除编辑后诊断 hook 的 D1-D4——tools/post-execute 规范通道、异步晚到补注、客户端 eager-clear、回归测试；已部署 b14fdde，重启完成）· 上一状态：2026-08-25 第五批 TS 冒烟 8/8 通过，C# 回归冒烟待做 · 单元 206/206、集成 29 过 1 跳过
+> 更新：2026-08-26（C# 回归冒烟完成：集成 C# 13 过 1 跳过，callHierarchy 注册期类型收窄已修复并提交）· 上一状态：第六批 D1-D4 已部署 b14fdde，TS 冒烟零警告 · 单元 206/206、集成 29 过 1 跳过
 
 ## 一、架构健康度
 
@@ -88,7 +88,7 @@
 
 ## 四、下次最该做的事
 
-1. **C# 回归冒烟（待做）**：在任一 C# 项目目录的新会话复验——`lsp_diagnostics` 返回真实 pull 诊断、`lsp_workspace_diagnostics` 非恒空（第五批 normalizeUri 增加百分号解码 + 客户端能力声明，需确证 C# pull 路径零回归）。
+1. **C# 回归冒烟（已完成 2026-08-26）**：C# 集成测试 13 过 1 跳过（真实 csharp-ls 进程：hover/definition/references/documentSymbols/diagnostics/completion/signatureHelp/formatting/rename/implementation/organizeImports 均通过；callHierarchy 仍为能力边界跳过）。
 
 ## 附：2026-08-24 部署记录
 
