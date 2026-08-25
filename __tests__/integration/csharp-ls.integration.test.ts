@@ -101,6 +101,11 @@ describe.skipIf(!csharpLsReady)('csharp-ls 真实集成测试', () => {
   let connection: MessageConnection | null = null;
   let serverCapabilities: ServerCapabilities | null = null;
 
+  /** 注册期读取能力会因 beforeAll 尚未执行被收窄为 null；封装函数避免类型收窄。 */
+  function supportsCallHierarchy(): boolean {
+    return serverCapabilities?.callHierarchyProvider !== undefined;
+  }
+
   /**
    * 文档版本计数器。
    * csharp-ls 用 Int32 反序列化 version，Date.now() 溢出。
@@ -383,7 +388,7 @@ describe.skipIf(!csharpLsReady)('csharp-ls 真实集成测试', () => {
    * callHierarchy — 分析 Main 方法的调用链。
    * csharp-ls 0.26.0 未声明 callHierarchyProvider，条件跳过。
    */
-  it.runIf(serverCapabilities?.callHierarchyProvider !== undefined)(
+  it.runIf(supportsCallHierarchy())(
     'callHierarchy — 分析 Main 方法的调用链',
     async () => {
       await syncDocument();
