@@ -20,9 +20,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ─── Mock 外部依赖 ──────────────────────────────────────
-// node:fs: 阻止读取真实文件，syncDocument 内部调用 readFileSync 时返回固定内容
+// node:fs: 阻止读取真实文件，syncDocument 内部调用 readFileSync 时返回固定内容；
+// realpathSync 透传（languages.ts 的 bundled 解析锚点用，测试文件本就不在 symlink 布局）
 vi.mock('node:fs', () => ({
   readFileSync: vi.fn().mockReturnValue('// mock file content'),
+  realpathSync: (p: string) => p,
 }));
 
 // 动态导入被测模块（确保 vi.mock 已生效）
