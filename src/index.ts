@@ -209,7 +209,7 @@ export function apply(ctx: ExtendedContext, config: LspClientConfig): void {
   };
   const fingerprintOf = (diags: { range: { start: { line: number } }; code?: string; message: string }[]): string =>
     diags.map((d) => `${d.range.start.line}:${d.code ?? ''}:${d.message}`).join('|');
-  const diagnosticHint = (errors: { range: { start: { line: number } }; code?: string; message: string }[], filePath: string): string => {
+  const diagnosticHint = (errors: { range: { start: { line: number } }; code?: string; message: string }[]): string => {
     const summary = errors.slice(0, 5).map(
       (d) => `  行${d.range.start.line + 1}: ${d.code ? `[${d.code}] ` : ''}${d.message}`,
     ).join('\n');
@@ -250,7 +250,7 @@ export function apply(ctx: ExtendedContext, config: LspClientConfig): void {
           const fingerprint = fingerprintOf(errors);
           if (fingerprint !== lastDiagnosticFingerprints.get(cooldownKey)) {
             lastDiagnosticFingerprints.set(cooldownKey, fingerprint);
-            const hint = diagnosticHint(errors, filePath);
+            const hint = diagnosticHint(errors);
             ctx.logger.info(`[lsp-client] 自动诊断注入: ${errors.length} 个错误 (${filePath.split(/[/\\]/).pop()})`);
             return { kind: 'accept', additionalContexts: [createDiagnosticMessage(hint)] };
           }
@@ -266,7 +266,7 @@ export function apply(ctx: ExtendedContext, config: LspClientConfig): void {
               const lateFingerprint = fingerprintOf(lateErrors);
               if (lateFingerprint === lastDiagnosticFingerprints.get(cooldownKey)) return;
               lastDiagnosticFingerprints.set(cooldownKey, lateFingerprint);
-              const hint = diagnosticHint(lateErrors, filePath);
+              const hint = diagnosticHint(lateErrors);
               ctx.logger.info(`[lsp-client] 晚到诊断补注: ${lateErrors.length} 个错误 (${filePath.split(/[/\\]/).pop()})`);
               execution.agent?.inject?.(createDiagnosticMessage(hint));
             } catch {

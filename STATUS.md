@@ -75,7 +75,7 @@
 - **D2 陈旧诊断**：`LspServerManager.clearDiagnostics()` + `LspClient.syncDocument()` 在 didChange 后清除旧诊断缓存（客户端 eager-clear，不依赖 typescript-language-server 版本）。
 - **D3 规范通道**：移除旧 `tools/result + steer()`；内联命中返回 `additionalContexts`（`createUserMessage`），晚到走 `agent.inject()`；`LspExecutionContext.agent` 增加 `inject` 类型；新增 `@deepseek-ai/dsh-llm` peer+dev 依赖。
 - **D4 测试**：`index.test.ts` 3 个 hook 回归（内联附加/晚到补注/非编辑不触发）、`server-manager.test.ts` clearDiagnostics、`lsp-client.test.ts` didChange 清缓存 + waitMs 覆盖。
-- **验证**：`pnpm typecheck` 零错误；`pnpm test` **206/206**；`pnpm test:integration` **29 过 1 跳过**（TS 16 + C# 13 过 1 跳过）；`pnpm build` 成功。
+- **验证**：`pnpm typecheck` 零错误；`pnpm test` **206/206**；`pnpm test:integration` **29 过 1 跳过**（TS 16 + C# 13 过 1 跳过）；`pnpm build` 成功。部署后冒烟发现 `diagnosticHint` 未使用 `filePath` 参数（TS6133），已修复（去掉参数）并随本次重新部署。
 - **接口契约变化**：无 schema 变化；新增 peerDependency `@deepseek-ai/dsh-llm`（宿主 DSH 必含）；hook 从 `tools/result` 改为 `tools/post-execute`（宿主扩展点，非工具 schema）。
 - **部署状态**：未部署；代码与测试已就绪，待按部署仪式推进。
 
