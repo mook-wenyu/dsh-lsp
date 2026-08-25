@@ -18,8 +18,9 @@
  */
 
 import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** 受支持的语言 id。 */
 export type LanguageId = 'csharp' | 'typescript';
@@ -71,7 +72,12 @@ export interface LanguageServerDescriptor {
 
 // ─── bundled 服务器启动解析（惰性 + 缓存）──────────────────────────────
 
-const requireFromHere = createRequire(import.meta.url);
+// 以自身文件的真实路径为 require 锚点：生产部署形态是 pnpm isolated 布局的
+// 符号链接（node_modules/@echocore/dsh-lsp-client → .pnpm/.../node_modules/...），
+// Node 对符号链接路径做 node_modules 向上查找时基于链接路径链，够不到
+// .pnpm/<pkg>/node_modules 兄弟目录（2026-08-25 部署对账实测 MODULE_NOT_FOUND）；
+// realpathSync 后锚点落在真实目录，依赖解析恢复正常。
+const requireFromHere = createRequire(realpathSync(fileURLToPath(import.meta.url)));
 
 /** bundle 服务器启动缓存：LanguageId → {command,args} | null（null=解析失败，回退外部命令）。 */
 const bundledLaunchCache = new Map<LanguageId, ServerLaunch | null>();
