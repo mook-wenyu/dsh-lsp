@@ -10,7 +10,7 @@ DSH LSP 客户端插件：为 AI 代理提供语言服务器协议（LSP）能�
 - **提示词边界式条件注入**：仅当会话 cwd 向上探测到项目文件标记时注入对应语言的 LSP 使用指引（C#：`.slnx/.sln/.csproj`；TS/JS：`package.json/tsconfig.json/jsconfig.json`），非项目会话零 token 占用；monorepo 多语言并行注入
 - **多会话工作区隔离**：LspWorkspacePool 按会话 × 语言 × 项目根维护独立语言服务器实例
 - **懒启动**：服务器在首次工具调用时拉起，`start()` 幂等
-- **编辑后自动诊断**：监听 tools/result 事件，编辑 `.cs/.ts/.tsx/.js/.jsx` 文件后自动注入诊断摘要
+- **编辑后自动诊断**：监听 tools/post-execute 事件，编辑 `.cs/.ts/.tsx/.js/.jsx` 文件后自动注入诊断摘要（内联附加 additionalContexts；TS/JS push-only 晚到补注 agent.inject）
 
 ## 前置条件
 

@@ -294,5 +294,17 @@ describe('LspServerManager', () => {
       // 键归一化后命中；空数组推送也算到达
       expect(manager.hasDiagnostics('file:///d:/x.ts')).toBe(true);
     });
+
+    it('clearDiagnostics：清除指定 URI 缓存（客户端 eager-clear，D2 回归锁）', async () => {
+      const { LspServerManager } = await import('../src/server-manager.js');
+      const manager = new LspServerManager(createTestOptions());
+
+      manager.updateDiagnosticsCache('file:///D:/x.ts', []);
+      expect(manager.hasDiagnostics('file:///d:/x.ts')).toBe(true);
+
+      manager.clearDiagnostics('file:///d:/x.ts');
+      expect(manager.hasDiagnostics('file:///d:/x.ts')).toBe(false);
+      expect(manager.getAllDiagnostics()).toEqual([]);
+    });
   });
 });

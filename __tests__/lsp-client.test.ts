@@ -68,6 +68,9 @@ function createMockManager(connection: ReturnType<typeof createMockConnection>) 
     updateDiagnosticsCache(uri: string, diagnostics: any[]) {
       diagnosticsCache.set(uri, diagnostics);
     },
+    clearDiagnostics(uri: string) {
+      diagnosticsCache.delete(uri);
+    },
     _diagnosticsCache: diagnosticsCache,
   };
 }
@@ -654,6 +657,42 @@ describe('LspClient', () => {
 
       expect(result).toEqual([]);
       expect(elapsed).toBeGreaterThanOrEqual(40);
+    });
+
+    it('diagnostics(file, { waitMs }) 覆盖 push-only 等待上限（供内联短等待）', async () => {
+      mockManager.supportsPull = false;
+      mockManager.diagnosticWatchMs = 300;
+      mockManager._diagnosticsCache.clear();
+
+      const started = Date.now();
+      const result = await client.diagnostics('d:\\src\\never.ts', { waitMs: 50 });
+      const elapsed = Date.now() - started;
+
+      expect(result).toEqual([]);
+      expect(elapsed).toBeGreaterThanOrEqual(40);
+      expect(elapsed).toBeLessThan(250);
+    });
+
+    it('didChange 后清除旧诊断缓存，避免 push-only 返回编辑前旧诊断（D2 回归锁）', async () => {
+      mockManager.supportsPull = false;
+      mockManager.diagnosticWatchMs = 50;
+      mockManager._diagnosticsCache.clear();
+
+      // 首次 hover 建立 didOpen 文件缓存
+      mockConn.sendRequest.mockResolvedValueOnce(null);
+      await client.hover('d:\\src\\app.ts', 0, 0);
+
+      // 编辑前旧诊断已在缓存中（模拟上一次推送）
+      mockManager.updateDiagnosticsCache('file:///d:/src/app.ts', [
+        { severity: 1, message: '旧诊断', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, code: 'TS2322' },
+      ]);
+
+      // 文件内容变化 → didChange 后必须清缓存，等待新推送而非返回旧诊断
+      vi.mocked(readFileSync).mockReturnValueOnce('// changed content');
+      const result = await client.diagnostics('d:\\src\\app.ts');
+
+      expect(mockManager._diagnosticsCache.has('file:///d:/src/app.ts')).toBe(false);
+      expect(result).toEqual([]);
     });
 
     it('format() 使用语言默认格式化选项（TS 2/true）', async () => {

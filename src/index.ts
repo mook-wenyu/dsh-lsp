@@ -16,6 +16,7 @@
 
 import type { Context } from '@deepseek-ai/cordis';
 import Schema from '@deepseek-ai/schemastery';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { LspServerManager } from './server-manager.js';
 import { LspClient } from './lsp-client.js';
 import { createLspTools } from './tools.js';
@@ -191,58 +192,97 @@ export function apply(ctx: ExtendedContext, config: LspClientConfig): void {
     void pool.disposeSession(payload.agent.id);
   });
 
-  // ── tools/result hook：编辑 .cs/.ts/.tsx/.js/.jsx 文件后自动注入诊断摘要 ──
-  // 使用 DSH 当前 tools/result 协议字段：name、arguments、agent。
+  // ── tools/post-execute hook：编辑 .cs/.ts/.tsx/.js/.jsx 文件后自动注入诊断摘要 ──
+  // 使用 DSH 推荐的 tools/post-execute（可附加 additionalContexts），替代旧 tools/result + steer。
   // 每次诊断按 session + language + projectRoot 选取对应实例，避免多项目串线。
   const codeFilePattern = /\.(cs|ts|tsx|js|jsx)$/i;
   const lspToolPattern = /^lsp_/;
   const diagnosticCooldown = new Map<string, number>();
   const DIAGNOSTIC_COOLDOWN_MS = 30_000;
   const lastDiagnosticFingerprints = new Map<string, string>();
+  // push-only 服务器（TS/JS）编辑后诊断异步到达：内联先短等，拿不到再交后台补注。
+  const INLINE_DIAGNOSTIC_WAIT_MS = 1_000;
+
+  const extractEditedFilePath = (args: unknown): string | undefined => {
+    const record = args as { file_path?: string; path?: string } | undefined;
+    return record?.file_path ?? record?.path;
+  };
+  const fingerprintOf = (diags: { range: { start: { line: number } }; code?: string; message: string }[]): string =>
+    diags.map((d) => `${d.range.start.line}:${d.code ?? ''}:${d.message}`).join('|');
+  const diagnosticHint = (errors: { range: { start: { line: number } }; code?: string; message: string }[], filePath: string): string => {
+    const summary = errors.slice(0, 5).map(
+      (d) => `  行${d.range.start.line + 1}: ${d.code ? `[${d.code}] ` : ''}${d.message}`,
+    ).join('\n');
+    return `[lsp] 编辑后发现 ${errors.length} 个编译错误：\n${summary}\n使用 lsp_diagnostics + lsp_code_action 验证和修复。`;
+  };
+  const createDiagnosticMessage = (hint: string) =>
+    createUserMessage({
+      content: [{ type: 'text', text: hint }],
+      source: { kind: 'plugin', plugin: 'lsp-client' },
+    });
 
   try {
-    (ctx as any).on?.('tools/result', (exec: any, _result: any) => {
+    (ctx as any).on?.('tools/post-execute', async (exec: any, result: any, next: any) => {
       try {
         const toolName = exec?.name as string | undefined;
-        if (!toolName || lspToolPattern.test(toolName)) return;
+        if (!toolName || lspToolPattern.test(toolName)) return next();
+        // 只处理成功的编辑/写入工具结果
+        if (result?.isError !== false) return next();
 
-        const args = exec?.arguments as { file_path?: string; path?: string } | undefined;
-        const filePath = args?.file_path ?? args?.path;
-        if (!filePath || !codeFilePattern.test(filePath)) return;
+        const filePath = extractEditedFilePath(exec?.arguments);
+        if (!filePath || !codeFilePattern.test(filePath)) return next();
 
         const execution = exec as LspExecutionContext;
         const sessionId = execution.agent?.id ?? 'anonymous';
         const now = Date.now();
-        const cooldownKey = `${sessionId}\\0${filePath}`;
+        const cooldownKey = `${sessionId}\0${filePath}`;
         const lastInjection = diagnosticCooldown.get(cooldownKey) ?? 0;
-        if (now - lastInjection < DIAGNOSTIC_COOLDOWN_MS) return;
+        if (now - lastInjection < DIAGNOSTIC_COOLDOWN_MS) return next();
         diagnosticCooldown.set(cooldownKey, now);
 
-        resolveWorkspace(filePath, execution).then(async ({ manager, client }) => {
-          await manager.start();
-          const diags = await client.diagnostics(filePath);
-          const errors = diags.filter((d) => d.severity === 'error');
-          if (errors.length === 0) return;
+        const { manager, client } = await resolveWorkspace(filePath, execution);
+        await manager.start();
 
-          const fingerprint = errors.map((d) => `${d.range.start.line}:${d.code}:${d.message}`).join('|');
-          if (fingerprint === lastDiagnosticFingerprints.get(cooldownKey)) return;
-          lastDiagnosticFingerprints.set(cooldownKey, fingerprint);
+        // 内联短等待：常见快路径直接附加到本次工具结果（C# pull 立即返回）
+        const diags = await client.diagnostics(filePath, { waitMs: INLINE_DIAGNOSTIC_WAIT_MS });
+        const errors = diags.filter((d) => d.severity === 'error');
+        if (errors.length > 0) {
+          const fingerprint = fingerprintOf(errors);
+          if (fingerprint !== lastDiagnosticFingerprints.get(cooldownKey)) {
+            lastDiagnosticFingerprints.set(cooldownKey, fingerprint);
+            const hint = diagnosticHint(errors, filePath);
+            ctx.logger.info(`[lsp-client] 自动诊断注入: ${errors.length} 个错误 (${filePath.split(/[/\\]/).pop()})`);
+            return { kind: 'accept', additionalContexts: [createDiagnosticMessage(hint)] };
+          }
+        }
 
-          const summary = errors.slice(0, 5).map(
-            (d) => `  行${d.range.start.line + 1}: ${d.code ? `[${d.code}] ` : ''}${d.message}`,
-          ).join('\\n');
-          const hint = `[lsp] 编辑后发现 ${errors.length} 个编译错误：\\n${summary}\\n使用 lsp_diagnostics + lsp_code_action 验证和修复。`;
-          ctx.logger.info(`[lsp-client] 自动诊断注入: ${errors.length} 个错误 (${filePath.split(/[/\\\\]/).pop()})`);
-          execution.agent?.steer?.({ source: { kind: 'plugin' }, content: [{ type: 'text', text: hint }] } as any);
-        }).catch(() => {
-          // 诊断失败不阻塞工具主流程。
-        });
+        // push-only（TS/JS）内联未拿到新错误：启动晚到补注，不阻塞编辑结果返回。
+        if (!manager.supportsPull) {
+          void (async () => {
+            try {
+              const lateDiags = await client.diagnostics(filePath);
+              const lateErrors = lateDiags.filter((d) => d.severity === 'error');
+              if (lateErrors.length === 0) return;
+              const lateFingerprint = fingerprintOf(lateErrors);
+              if (lateFingerprint === lastDiagnosticFingerprints.get(cooldownKey)) return;
+              lastDiagnosticFingerprints.set(cooldownKey, lateFingerprint);
+              const hint = diagnosticHint(lateErrors, filePath);
+              ctx.logger.info(`[lsp-client] 晚到诊断补注: ${lateErrors.length} 个错误 (${filePath.split(/[/\\]/).pop()})`);
+              execution.agent?.inject?.(createDiagnosticMessage(hint));
+            } catch {
+              // 晚到补注失败不阻塞工具主流程。
+            }
+          })();
+        }
+
+        return next();
       } catch {
         // hook 执行异常不阻塞工具主流程。
+        return next();
       }
     });
   } catch {
-    // 非所有宿主版本都提供 tools/result 事件。
+    // 非所有宿主版本都提供 tools/post-execute 事件。
   }
 
   if (config.autoStart && workspaceRootOverride) {

@@ -22,11 +22,15 @@ import { resolve as resolvePath } from 'node:path'
 const mocks = vi.hoisted(() => {
   const start = vi.fn().mockResolvedValue({});
   const dispose = vi.fn().mockResolvedValue(undefined);
+  const diagnostics = vi.fn().mockResolvedValue([]);
   const LspServerManager = vi.fn().mockImplementation(() => ({
     start,
     dispose,
+    supportsPull: false,
+    languageId: 'typescript',
+    diagnosticWatchMs: 50,
   }));
-  const LspClient = vi.fn().mockImplementation(() => ({}));
+  const LspClient = vi.fn().mockImplementation(() => ({ diagnostics }));
   const createLspTools = vi.fn().mockReturnValue(
     Array.from({ length: 6 }, (_, i) => ({
       name: `lsp_tool_${i}`,
@@ -43,7 +47,7 @@ const mocks = vi.hoisted(() => {
       execute: vi.fn(),
     })),
   );
-  return { start, dispose, LspServerManager, LspClient, createLspTools };
+  return { start, dispose, diagnostics, LspServerManager, LspClient, createLspTools };
 });
 
 // ─── vi.mock 工厂引用 hoisted 变量 ──────────────────────
@@ -76,7 +80,7 @@ function createMockCtx() {
       context: vi.fn(),
     },
     effect: vi.fn(),
-
+    on: vi.fn(),
     logger: {
       info: vi.fn(),
       warn: vi.fn(),
@@ -89,8 +93,13 @@ function createMockCtx() {
 // ─── 测试 ───────────────────────────────────────────────
 describe('apply() 插件入口', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // mockReset 清除跨测试残留的 mockResolvedValueOnce/mockImplementationOnce 队列；
+    // 再设置默认实现，避免后续 hook 测试受前序影响。
+    mocks.diagnostics.mockReset();
+    mocks.diagnostics.mockResolvedValue([]);
+    mocks.start.mockReset();
     mocks.start.mockResolvedValue({});
+    vi.clearAllMocks();
   });
 
   // ─── 配置守卫 ────────────────────────────────────────
@@ -243,5 +252,100 @@ describe('apply() 插件入口', () => {
         expect.stringContaining('自动启动失败'),
       );
     });
+  });
+});
+
+describe('tools/post-execute 编辑后诊断 hook（D1/D3/D4 回归锁）', () => {
+  function getPostExecuteListener(ctx: ReturnType<typeof createMockCtx>) {
+    const on = vi.mocked(ctx.on);
+    const call = on.mock.calls.find(([event]) => event === 'tools/post-execute');
+    expect(call).toBeDefined();
+    return call![1] as (exec: any, result: any, next: any) => Promise<any>;
+  }
+
+  it('编辑 .ts 成功且有错误：返回 additionalContexts（不再用 steer）', async () => {
+    const ctx = createMockCtx();
+    apply(ctx as any, { enabled: true, workspaceRoot: 'D:\\repo' });
+    const listener = getPostExecuteListener(ctx);
+    const next = vi.fn().mockResolvedValue({ kind: 'accept' });
+    const inject = vi.fn();
+    mocks.diagnostics.mockResolvedValueOnce([
+      { severity: 'error', message: 'TS2322 类型不匹配', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, code: 'TS2322' },
+    ]);
+
+    const decision = await listener(
+      { name: 'write', arguments: { file_path: 'D:\\repo\\src\\app.ts' }, agent: { id: 's1', inject } },
+      { isError: false, value: { path: 'D:\\repo\\src\\app.ts' } },
+      next,
+    );
+
+    expect(decision).toEqual({
+      kind: 'accept',
+      additionalContexts: [expect.objectContaining({
+        role: 'user',
+        source: expect.objectContaining({ kind: 'plugin', plugin: 'lsp-client' }),
+        content: [expect.objectContaining({ type: 'text', text: expect.stringContaining('[lsp] 编辑后发现 1 个编译错误') })],
+      })],
+    });
+    expect(next).not.toHaveBeenCalled();
+    expect(inject).not.toHaveBeenCalled();
+  });
+
+  it('编辑 .ts 成功但内联无诊断：启动晚到补注，通过 agent.inject 注入（D1）', async () => {
+    const ctx = createMockCtx();
+    apply(ctx as any, { enabled: true, workspaceRoot: 'D:\\repo' });
+    const listener = getPostExecuteListener(ctx);
+    const next = vi.fn().mockResolvedValue({ kind: 'accept' });
+    const inject = vi.fn();
+    // 第一次内联短等待返回空；第二次后台完整等待由测试手动 resolve，避免跨测试泄漏
+    let resolveLate!: (value: any) => void;
+    const latePromise = new Promise<any>((resolve) => { resolveLate = resolve; });
+    mocks.diagnostics
+      .mockResolvedValueOnce([])
+      .mockImplementationOnce(() => latePromise);
+
+    const decision = await listener(
+      { name: 'edit', arguments: { file_path: 'D:\\repo\\src\\app.ts' }, agent: { id: 's1', inject } },
+      { isError: false, value: { path: 'D:\\repo\\src\\app.ts' } },
+      next,
+    );
+
+    expect(decision).toEqual({ kind: 'accept' }); // 内联未附加
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(inject).not.toHaveBeenCalled(); // 后台仍在等待
+
+    resolveLate([
+      { severity: 'error', message: 'TS2493 晚到', range: { start: { line: 1, character: 0 }, end: { line: 1, character: 1 } }, code: 'TS2493' },
+    ]);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(inject).toHaveBeenCalledTimes(1);
+    expect(inject).toHaveBeenCalledWith(expect.objectContaining({
+      role: 'user',
+      content: [expect.objectContaining({ text: expect.stringContaining('TS2493') })],
+    }));
+  });
+
+  it('非编辑工具/失败结果/lsp_* 不触发诊断', async () => {
+    const ctx = createMockCtx();
+    apply(ctx as any, { enabled: true, workspaceRoot: 'D:\\repo' });
+    const listener = getPostExecuteListener(ctx);
+    const next = vi.fn().mockResolvedValue({ kind: 'accept' });
+
+    // 显式清空并让事件循环排空前一测试可能残留的后台微任务，避免跨测试污染
+    mocks.diagnostics.mockClear();
+    await new Promise((r) => setTimeout(r, 20));
+    mocks.diagnostics.mockClear();
+
+    // lsp_* 工具
+    await listener({ name: 'lsp_hover', arguments: { file_path: 'D:\\repo\\src\\app.ts' } }, { isError: false }, next);
+    // 失败结果
+    await listener({ name: 'write', arguments: { file_path: 'D:\\repo\\src\\app.ts' } }, { isError: true }, next);
+    // 非代码文件
+    await listener({ name: 'write', arguments: { file_path: 'D:\\repo\\README.txt' } }, { isError: false }, next);
+    // 无文件参数
+    await listener({ name: 'write', arguments: {} }, { isError: false }, next);
+
+    expect(mocks.diagnostics).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(4);
   });
 });

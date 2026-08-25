@@ -1,6 +1,6 @@
 # STATUS — dsh-lsp
 
-> 更新：2026-08-25（第五批：TS/JS 多语言化已部署 eb778a4，重启完成，TS 冒烟 8/8 通过；C# 回归冒烟待做）· 单元 200/200、集成 29 过 1 跳过
+> 更新：2026-08-26（第六批：消除编辑后诊断 hook 的 D1-D4——tools/post-execute 规范通道、异步晚到补注、客户端 eager-clear、回归测试）· 上一状态：2026-08-25 第五批 TS 冒烟 8/8 通过，C# 回归冒烟待做 · 单元 206/206、集成 29 过 1 跳过
 
 ## 一、架构健康度
 
@@ -67,6 +67,17 @@
 - 接口契约变化：无 schema 变化；工具 description/prompt 文案随部署生效；新增配置项 `diagnosticWaitMs`。
 - **部署（2026-08-25）**：commit 链 `28d8ba8`（主功能）→ `5c43a80`（typescript 移入 dependencies，部署对账发现）→ `8e7de38`（bundled 解析改 realpath 锚点，pnpm isolated symlink 下 require 解析失败实测）→ `eb778a4`（测试 mock 补丁）→ `4884117`（部署记录）；web profile lockfile 前进至 `eb778a4`，**allowBuilds 键学会双形态并存**（git+ssh 与 https codeload 键随 pnpm 解析协议翻转，两个都放免疫），`dsh plugin --profile web install` 对账通过；安装产物核验：lib 含 languages.js、`createRequire(realpath)` 可解析 typescript-language-server/package.json、cli.mjs 与 typescript/lib 存在。
 - **重启 + 冒烟（2026-08-25 完成）**：新实例 PID 26928（01:24:38 启动，3080 健康）；**TS 冒烟 8/8 通过**（本仓库即 TS 工程，会话直接调用新构建）：document_symbols 完整注册表符号树 / hover JSDoc / rename 跨 2 文件 3 处编辑计划 / diagnostics push 等待后零错误 / completion 真实成员补全（Schema 方法）/ workspace_diagnostics 聚合两文件零错误 / format 33 处编辑计划。已知边界符合预期（call_hierarchy 服务器错误）。**C# 回归冒烟待做**：在 C# 项目目录会话复验 diagnostics（pull）与 workspace_diagnostics 非恒空。
+
+### 第六批（2026-08-26 消除编辑后诊断 hook 差距 D1-D4，未部署）
+
+- **背景**：用户指出 TS“好像没有系统提示词导入/会话可编辑/诊断 hook”；深度分析确认核心能力无缺失，但存在 4 项真实差距，用户要求消除。
+- **D1 异步诊断丢失**：`src/index.ts` 编辑后 hook 改为 `tools/post-execute`：内联短等待 1000ms + push-only 晚到后台补注 `agent.inject()`；fingerprint 去重，晚到补注不再被 30s 冷却吞掉。
+- **D2 陈旧诊断**：`LspServerManager.clearDiagnostics()` + `LspClient.syncDocument()` 在 didChange 后清除旧诊断缓存（客户端 eager-clear，不依赖 typescript-language-server 版本）。
+- **D3 规范通道**：移除旧 `tools/result + steer()`；内联命中返回 `additionalContexts`（`createUserMessage`），晚到走 `agent.inject()`；`LspExecutionContext.agent` 增加 `inject` 类型；新增 `@deepseek-ai/dsh-llm` peer+dev 依赖。
+- **D4 测试**：`index.test.ts` 3 个 hook 回归（内联附加/晚到补注/非编辑不触发）、`server-manager.test.ts` clearDiagnostics、`lsp-client.test.ts` didChange 清缓存 + waitMs 覆盖。
+- **验证**：`pnpm typecheck` 零错误；`pnpm test` **206/206**；`pnpm test:integration` **29 过 1 跳过**（TS 16 + C# 13 过 1 跳过）；`pnpm build` 成功。
+- **接口契约变化**：无 schema 变化；新增 peerDependency `@deepseek-ai/dsh-llm`（宿主 DSH 必含）；hook 从 `tools/result` 改为 `tools/post-execute`（宿主扩展点，非工具 schema）。
+- **部署状态**：未部署；代码与测试已就绪，待按部署仪式推进。
 
 ## 三、已知风险点
 

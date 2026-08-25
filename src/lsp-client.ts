@@ -148,6 +148,10 @@ export class LspClient {
         // 同 didOpen：写入失败必须吞掉，避免未处理拒绝使宿主崩溃
       }).catch(() => {});
       this.fileCache.set(filePath, { version: newVersion, text });
+      // 客户端 eager-clear：旧诊断缓存对编辑后内容已失效，必须清除，
+      // 否则 push-only 服务器（TS/JS）的新诊断到达前，waitForPushDiagnostics
+      // 会把编辑前旧诊断当作“已推送”返回（D2 陈旧诊断根因）。
+      this.manager.clearDiagnostics(uri);
       return true;
     }
     // 内容未变化时跳过通知，避免不必要的网络开销
@@ -243,8 +247,11 @@ export class LspClient {
    *
    * 优先级：pull model（LSP 3.17+）> push 缓存（server-manager 缓存）。
    * csharp-ls 同时支持 push 和 pull；pull 返回更完整的诊断集。
+   *
+   * @param options.waitMs 仅对 push-only 服务器生效：覆盖默认等待上限
+   * （默认取语言 diagnosticWatchMs）。供编辑后 hook 做“内联短等待 + 晚到补注”拆分。
    */
-  async diagnostics(filePath: string): Promise<DiagnosticResult[]> {
+  async diagnostics(filePath: string, options?: { waitMs?: number }): Promise<DiagnosticResult[]> {
     const fresh = this.syncDocument(filePath);
     const uri = normalizeUri(this.toUri(filePath));
 
@@ -283,7 +290,7 @@ export class LspClient {
     // didOpen/didChange 后诊断由服务器异步 publishDiagnostics 推送——
     // 立即读缓存必得空（推送未到）；且 tsserver 首推常为空（项目加载中），
     // 需等「首推 + 稳定窗口」再读缓存（详见 waitForPushDiagnostics）。
-    return await this.waitForPushDiagnostics(uri, fresh);
+    return await this.waitForPushDiagnostics(uri, fresh, options?.waitMs);
   }
 
   /** push 诊断稳定窗口（ms）：首推到达后再等一小段，等待项目加载后的真实重推。 */
@@ -298,8 +305,8 @@ export class LspClient {
    *   重置计时，直到内容连续稳定 PUSH_SETTLE_MS 才返回；
    * - 全程不超过语言 diagnosticWatchMs；超时返回当前缓存（可能为空），不抛错。
    */
-  private async waitForPushDiagnostics(uri: string, fresh: boolean): Promise<DiagnosticResult[]> {
-    const deadline = Date.now() + this.manager.diagnosticWatchMs;
+  private async waitForPushDiagnostics(uri: string, fresh: boolean, waitMs?: number): Promise<DiagnosticResult[]> {
+    const deadline = Date.now() + (waitMs ?? this.manager.diagnosticWatchMs);
     let lastContent: string | null = null;
     let lastChangeAt = fresh ? -1 : 0; // 非新同步：立即满足稳定条件
     while (true) {

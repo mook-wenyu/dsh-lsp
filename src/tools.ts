@@ -25,6 +25,8 @@ export interface LspExecutionContext {
     readonly session?: { readonly header?: { readonly cwd?: string } }
     /** 宿主真实签名为 (message: UserMessage) => void；any 保证与宿主类型双向结构兼容 */
     readonly steer?: (message: any) => void
+    /** 宿主真实签名为 inject(message: UserMessage)：排队 durable context，供下一次模型请求看到 */
+    readonly inject?: (message: any) => void
   }
 }
 

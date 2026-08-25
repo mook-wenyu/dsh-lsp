@@ -195,6 +195,17 @@ export class LspServerManager {
   }
 
   /**
+   * 清除指定 URI 的诊断缓存（客户端 eager-clear）。
+   *
+   * push-only 服务器（TS/JS）在 didChange 后会异步重推；若不清除，waitForPushDiagnostics
+   * 可能把编辑前的旧诊断当作“已到达”返回（D2 陈旧诊断根因）。客户端清除缓存后，
+   * 下一次诊断等待会以“该 URI 尚未收到新推送”为起点，只返回编辑后的新诊断。
+   */
+  clearDiagnostics(uri: string): void {
+    this._diagnosticsCache.delete(normalizeUri(uri));
+  }
+
+  /**
    * 启动 LSP 服务器并完成 initialize 握手。
    *
    * 如果服务器已在运行，返回已有连接。
