@@ -1,6 +1,6 @@
 # STATUS — dsh-lsp
 
-> 更新：2026-08-25（第五批：TS/JS 多语言化完成，待部署）· 单元 200/200、集成 29 过 1 跳过 · 部署仪式见「四」第 1 条
+> 更新：2026-08-25（第五批：TS/JS 多语言化已部署 eb778a4，DSH 重启执行中）· 单元 200/200、集成 29 过 1 跳过
 
 ## 一、架构健康度
 
@@ -65,7 +65,7 @@
 - **依赖**：typescript-language-server ^5.3.0 + typescript ^5.9.3 入 dependencies（内置分发，DSH profile 走现有 git 依赖流程零额外安装；工作区 typescript 优先）。
 - **测试**：单测 200/200（+34：languages/resolver 多语言/prompt 分段/server-manager handler/lsp-client 等待与归一）；集成新增 `typescript-ls.integration.test.ts` 16 项（真实 ts-ls 进程：14 工具 + jsconfig checkJs + push 诊断等待），夹具 `test-project-ts/`（tsconfig strict）与 `test-project-js/`（jsconfig checkJs）；csharp 集成 14 项零回归。
 - 接口契约变化：无 schema 变化；工具 description/prompt 文案随部署生效；新增配置项 `diagnosticWaitMs`。
-- **待部署**：commit+push → web profile lockfile 前进 → allowBuilds codeload hash 对账 → `dsh plugin install` → 重启 DSH → 真实 TS 会话冒烟（流程见「四」）。
+- **部署（2026-08-25）**：commit 链 `28d8ba8`（主功能）→ `5c43a80`（typescript 移入 dependencies，部署对账发现）→ `8e7de38`（bundled 解析改 realpath 锚点，pnpm isolated symlink 下 require 解析失败实测）→ `eb778a4`（测试 mock 补丁）；web profile lockfile 前进至 `eb778a4`，**allowBuilds 键学会双形态并存**（git+ssh 与 https codeload 键随 pnpm 解析协议翻转，两个都放免疫），`dsh plugin --profile web install` 对账通过；安装产物核验：lib 含 languages.js、`createRequire(realpath)` 可解析 typescript-language-server/package.json、cli.mjs 与 typescript/lib 存在。**DSH 重启 + 冒烟执行中**（步骤见 `%TEMP%\dsh-lsp-smoke-checklist.txt`）。
 
 ## 三、已知风险点
 
