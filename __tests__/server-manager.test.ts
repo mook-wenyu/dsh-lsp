@@ -28,6 +28,7 @@ vi.mock('vscode-jsonrpc/node.js', () => ({
       rejectNotifications ? Promise.reject(new Error('ERR_STREAM_DESTROYED')) : Promise.resolve(),
     ),
     onNotification: vi.fn(),
+    onRequest: vi.fn(),
     onClose: vi.fn(),
     onError: vi.fn(),
     listen: vi.fn(),
@@ -185,6 +186,7 @@ describe('LspServerManager', () => {
       sendRequest: vi.fn().mockResolvedValue({ capabilities: {}, serverInfo: { name: 'x' } }),
       sendNotification: vi.fn().mockReturnValue(Promise.resolve()),
       onNotification: vi.fn(),
+      onRequest: vi.fn(),
       onClose: vi.fn(),
       onError: vi.fn(),
       listen: vi.fn(),
@@ -219,5 +221,78 @@ describe('LspServerManager', () => {
     expect(normalizeUri('file:///d:/x/Y.cs')).toBe('file:///d:/x/Y.cs');
     // 非 file URI 不报错
     expect(normalizeUri('untitled:Untitled-1')).toBe('untitled:Untitled-1');
+  });
+
+  it('normalizeUri 解码百分号转义（tsserver 把盘符冒号编码为 %3A，缓存键失配回归锁）', async () => {
+    const { normalizeUri } = await import('../src/server-manager.js');
+    // ts-ls 推送形态：file:///d%3A/TSProjects/...（2026-08-25 集成实测）
+    // 必须与查询/缓存键 file:///d:/TSProjects/... 归一为同一键
+    const pushed = 'file:///d%3A/TSProjects/x/src/app.ts';
+    const queried = 'file:///d:/TSProjects/x/src/app.ts';
+    expect(normalizeUri(pushed)).toBe(normalizeUri(queried));
+    // 常规特殊字符（空格）两种形态也归一（URL 规范化为 %20 编码形态）
+    expect(normalizeUri('file:///d:/a b.ts')).toBe(normalizeUri('file:///d:/a%20b.ts'));
+  });
+
+  // ─── 多语言化（2026-08-25）：server→client 请求处理 / 语言差异参数 ──
+  describe('多语言化', () => {
+    it('注册 workspace/configuration handler：formattingOptions 按语言格式默认值应答', async () => {
+      const { LspServerManager } = await import('../src/server-manager.js');
+      const { createMessageConnection } = await import('vscode-jsonrpc/node.js');
+      const manager = new LspServerManager(createTestOptions());
+      await manager.start();
+
+      const conn = (createMessageConnection as unknown as vi.Mock).mock.results[0].value;
+      const handler = conn.onRequest.mock.calls.find(
+        (c: unknown[]) => c[0] === 'workspace/configuration',
+      )![1];
+
+      // C# 语言（默认）：4/false
+      expect(handler({ items: [{ section: 'formattingOptions' }] })).toEqual([
+        { tabSize: 4, insertSpaces: false },
+      ]);
+      // 未知 section → null（不阻塞服务器）
+      expect(handler({ items: [{ section: 'other' }] })).toEqual([null]);
+      expect(handler(null)).toBeNull();
+    });
+
+    it('typescript 语言：formatDefaults 2/true，初始化选项含 hostInfo/tsserver，诊断等待 5000ms', async () => {
+      const { LspServerManager } = await import('../src/server-manager.js');
+      const { createMessageConnection } = await import('vscode-jsonrpc/node.js');
+      const manager = new LspServerManager(createTestOptions({ languageId: 'typescript' }));
+
+      expect(manager.formatDefaults).toEqual({ tabSize: 2, insertSpaces: true });
+      expect(manager.diagnosticWatchMs).toBe(5000);
+
+      // 配置覆盖：diagnosticWaitMs 优先于语言描述符默认
+      const overridden = new LspServerManager(createTestOptions({ languageId: 'typescript', diagnosticWaitMs: 8000 }));
+      expect(overridden.diagnosticWatchMs).toBe(8000);
+
+      await manager.start();
+      const conn = (createMessageConnection as unknown as vi.Mock).mock.results[0].value;
+      const handler = conn.onRequest.mock.calls.find(
+        (c: unknown[]) => c[0] === 'workspace/configuration',
+      )![1];
+      expect(handler({ items: [{ section: 'formattingOptions' }] })).toEqual([
+        { tabSize: 2, insertSpaces: true },
+      ]);
+
+      // 初始化参数携带语言特定 options（hostInfo + tsserver fallbackPath）
+      const initParams = conn.sendRequest.mock.calls.find(
+        (c: unknown[]) => c[0] === 'initialize',
+      )![1];
+      expect(initParams.initializationOptions.hostInfo).toBe('dsh-lsp-client');
+      expect(initParams.initializationOptions.tsserver.fallbackPath).toContain('typescript');
+    });
+
+    it('hasDiagnostics：区分「有推送（含空数组）」与「从未推送」', async () => {
+      const { LspServerManager } = await import('../src/server-manager.js');
+      const manager = new LspServerManager(createTestOptions());
+
+      expect(manager.hasDiagnostics('file:///d:/x.ts')).toBe(false);
+      manager.updateDiagnosticsCache('file:///D:/x.ts', []);
+      // 键归一化后命中；空数组推送也算到达
+      expect(manager.hasDiagnostics('file:///d:/x.ts')).toBe(true);
+    });
   });
 });

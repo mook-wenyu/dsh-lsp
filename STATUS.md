@@ -1,11 +1,12 @@
 # STATUS — dsh-lsp
 
-> 更新：2026-08-25（第五次：诊断能力驱动修复完成并已部署，待 DSH 重启加载）· 部署构建 4a3d43f · 166/166 本地全绿
+> 更新：2026-08-25（第五批：TS/JS 多语言化完成，待部署）· 单元 200/200、集成 29 过 1 跳过 · 部署仪式见「四」第 1 条
 
 ## 一、架构健康度
 
-- 模块总数：8（src/index、tools、lsp-client、server-manager、workspace-pool、workspace-resolver、prompt、types），依赖方向单向：index → tools/lsp-client/pool/resolver/prompt，无环。
-- 已知能力边界：`lsp_call_hierarchy` 受 csharp-ls 0.26.0 限制（服务端不声明能力，容错返回错误提示），非缺陷。
+- 模块总数：9（src/index、languages、tools、lsp-client、server-manager、workspace-pool、workspace-resolver、prompt、types），依赖方向单向：index → languages/tools/lsp-client/pool/resolver/prompt，无环。
+- 语言注册表（languages.ts）集中声明：扩展名路由、项目标记、启动方式（外部 csharp-ls / 内置 typescript-language-server+typescript）、env、初始化选项、格式默认值、push 诊断等待、提示词段——新增语言只改注册表。
+- 已知能力边界：`lsp_call_hierarchy` 两服务器均不可用（csharp-ls 0.26.0 不声明；typescript-language-server 5.3.0 声明 callHierarchyProvider 但 **prepareCallHierarchy 处理器未注册**，实测 Method not found），非缺陷。
 
 ## 二、本次变更影响范围
 
@@ -50,6 +51,22 @@
 - **部署（2026-08-25）**：commit `4a3d43f` 已 push；web profile lockfile 前进至 `4a3d43f`，allowBuilds 键同步更新；`dsh plugin --profile web install` 完成 bundles 对账；已核验活跃 symlink 构建含全部修复标记。运行中 DSH 需重启加载。
 - 接口契约变化：无。
 
+### 第五批（TS/JS 多语言化，2026-08-25，已完成待部署）
+
+- **目标**（用户 Q&A 五轮确认）：插件内新增 TS/JS 支持与 C# 并存；`.ts/.tsx/.js/.jsx` × 14 工具全量；服务器内置（bundled）；按项目标记判定 + 按语言分段注入；交付含部署。
+- **架构**：新增 `src/languages.ts` 语言注册表；resolver 联合探测（TS 标记 = package.json/tsconfig.json/jsconfig.json）；池键加语言维（monorepo 同根双语言独立实例）；index 按扩展名路由与 crafts 分类；prompt 按语言分段注入；tools 描述中性化+诚实化（call_hierarchy 两服务器边界、organize_imports TS 删未使用 vs C# 不删、workspace_diagnostics TS 仅已探明文件）。
+- **协议差异适配**（全部被真实进程集成测试锁定）：
+  1. **URI 百分号解码**：ts-ls 推送 URI 盘符冒号编码为 %3A（file:///d%3A/...），不解码则 push 缓存键失配恒空——normalizeUri 增加百分号解码（全平台）+ 盘符小写（仅 Windows）；
+  2. **诊断时序**：ts-ls push-only 且「先推空（项目加载中）→ 就绪后重推真实」多波推送——lsp-client 增加「内容变化重置计时 + 300ms 稳定窗口 + diagnosticWatchMs 上限」等待（新增配置项 diagnosticWaitMs，默认 5000）；
+  3. **server→client workspace/configuration**：ts-ls 5.1+ 按文件请求 formattingOptions——server-manager 注册应答（按语言格式默认值：C# 4/false、TS 2/true）；
+  4. **WorkspaceEdit 双形态**：codeAction/organizeImports/rename 统一兼容 changes + documentChanges；
+  5. **shell 启动**：bundled 语言用 node 绝对路径启动、`useShell:false`——shell:true 空格拼接会拆炸带空格的 node 路径（'D:\Program' is not recognized 实测定案）；csharp-ls 保持 shell（.cmd shim）；
+  6. **能力声明**：initialize 客户端能力补 callHierarchy 声明（ts-ls 声明服务端能力但处理器未注册，仍不可用，记录为边界）；
+- **依赖**：typescript-language-server ^5.3.0 + typescript ^5.9.3 入 dependencies（内置分发，DSH profile 走现有 git 依赖流程零额外安装；工作区 typescript 优先）。
+- **测试**：单测 200/200（+34：languages/resolver 多语言/prompt 分段/server-manager handler/lsp-client 等待与归一）；集成新增 `typescript-ls.integration.test.ts` 16 项（真实 ts-ls 进程：14 工具 + jsconfig checkJs + push 诊断等待），夹具 `test-project-ts/`（tsconfig strict）与 `test-project-js/`（jsconfig checkJs）；csharp 集成 14 项零回归。
+- 接口契约变化：无 schema 变化；工具 description/prompt 文案随部署生效；新增配置项 `diagnosticWaitMs`。
+- **待部署**：commit+push → web profile lockfile 前进 → allowBuilds codeload hash 对账 → `dsh plugin install` → 重启 DSH → 真实 TS 会话冒烟（流程见「四」）。
+
 ## 三、已知风险点
 
 - **已部署（commit 5d84c4f）**：web profile 依赖前进至新提交，`pnpm-workspace.yaml` 的 allowBuilds 键同步更新为 `5d84c4f` 的 codeload hash，`dsh plugin --profile web install` 已完成 bundles 对账；安装产物 `lib/` 含全部 4 处 `.catch` 守卫。运行中的 DSH 进程**需重启**方可加载新构建（安装命令不热重载进程）。**禁止裸 `pnpm install`**（不触发 bundles 对账，会静默丢失插件）。
@@ -59,9 +76,10 @@
 
 ## 四、下次最该做的事
 
-1. **重启 DSH 并复验诊断**：重启后在 C# 项目内调 `lsp_diagnostics`（含错误文件应返回真实诊断而非空）；再调 `workspace_diagnostics` 确认全局聚合非恒空。若仍空，日志现在会打印 pull 失败的真实 code+message（替代笼统"不支持"），按报错定位剩余触发条件。
-2. Bug G 生产配对复验（可选）：在 cwd 位于 C# 项目内的会话调 diagnostics → workspace_diagnostics，确认聚合非恒空（本会话 cwd 不在 C# 项目内，池键不匹配无法自验）。
-3. （可选）多语言化设计文档：LanguageServerRegistry 抽象。
+1. **部署第五批（待执行）**：`git push` → `~/.dsh/profiles/web` 的 `pnpm update @echocore/dsh-lsp-client` 重解析 git 依赖 → lockfile 前进 → `pnpm-workspace.yaml` allowBuilds 键更新为新 codeload hash → `pnpm install --dir` → `dsh plugin --profile web install` 对账 bundles → 重启 DSH（分离进程 + 日志落盘 `%TEMP%`）→ 冒烟：本仓库（TS 工程）内验证注入与 hover/diagnostics/document_symbols/rename 等。
+2. **重启 DSH 并复验 C# 诊断**：第五批改动覆盖了 normalizeUri（增加百分号解码）与 server-manager（能力声明/应答），需在重启后复验 C# pull 诊断与 workspace_diagnostics 无回归。
+3. （可选）tsgo/TS7 原生 LSP 追踪：`@typescript/native-preview` 编辑器能力（references/rename/signature）补齐后评估替换 typescript-language-server（当前 2026 状态不成熟，见 docs/analysis-tsjs.md §4.2）。
+4. （可选）languages 注册表扩展下一语言（Python/pyright 等）：只改注册表 + 探测标记 + 提示词段。
 
 ## 附：2026-08-24 部署记录
 

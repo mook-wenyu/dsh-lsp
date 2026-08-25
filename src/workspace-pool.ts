@@ -1,21 +1,23 @@
 import { resolve } from 'node:path'
+import type { LanguageId } from './languages.js'
 import type { LspClient } from './lsp-client.js'
 import type { LspServerManager } from './server-manager.js'
 
-/** 一个 session + projectRoot 的隔离 LSP 运行实例。 */
+/** 一个 session + language + projectRoot 的隔离 LSP 运行实例。 */
 export interface LspWorkspaceInstance {
   readonly client: LspClient
   readonly manager: LspServerManager
 }
 
-export type LspWorkspaceFactory = (projectRoot: string) => LspWorkspaceInstance
+export type LspWorkspaceFactory = (projectRoot: string, languageId: LanguageId) => LspWorkspaceInstance
 
-function keyOf(sessionId: string, projectRoot: string): string {
-  return `${sessionId}\0${resolve(projectRoot)}`
+/** 键含语言维：monorepo 同根多语言（C#+TS/JS）各持独立服务器实例，互不干扰。 */
+function keyOf(sessionId: string, languageId: LanguageId, projectRoot: string): string {
+  return `${sessionId}\0${languageId}\0${resolve(projectRoot)}`
 }
 
 /**
- * 按会话和项目根目录隔离 LSP 实例，避免未保存文档、诊断和重启状态串线。
+ * 按会话、语言和项目根目录隔离 LSP 实例，避免未保存文档、诊断和重启状态串线。
  * 实例自身保持懒启动；池只负责生命周期与复用。
  */
 export class LspWorkspacePool {
@@ -23,11 +25,11 @@ export class LspWorkspacePool {
 
   constructor(private readonly factory: LspWorkspaceFactory) {}
 
-  get(sessionId: string, projectRoot: string): LspWorkspaceInstance {
-    const key = keyOf(sessionId, projectRoot)
+  get(sessionId: string, languageId: LanguageId, projectRoot: string): LspWorkspaceInstance {
+    const key = keyOf(sessionId, languageId, projectRoot)
     const existing = this.instances.get(key)
     if (existing !== undefined) return existing
-    const instance = this.factory(resolve(projectRoot))
+    const instance = this.factory(resolve(projectRoot), languageId)
     this.instances.set(key, instance)
     return instance
   }

@@ -53,7 +53,7 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
     defineTool({
       name: 'lsp_hover',
       description:
-        '查看 C# 标识符的类型签名与文档注释时必用，优于读源码。' +
+        '查看标识符的类型签名与文档注释时必用，优于读源码（按文件语言自动路由 C#/TS/JS 语言服务器）。' +
         '返回 Markdown 格式类型信息；位置不精确时会尝试最近的符号。',
       parameters: {
         file_path: {
@@ -101,7 +101,7 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
     defineTool({
       name: 'lsp_definition',
       description:
-        '定位 C# 符号定义时必用，优于 grep 文本匹配（语义精确、无同名歧义）。' +
+        '定位符号定义时必用，优于 grep 文本匹配（语义精确、无同名歧义；按文件语言自动路由 C#/TS/JS）。' +
         '返回定义位置的文件路径与行列范围。',
       parameters: {
         file_path: {
@@ -145,7 +145,7 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
     defineTool({
       name: 'lsp_references',
       description:
-        '重构影响分析必用：语义级全量引用，跨文件且无漏报，优于 grep 文本匹配。' +
+        '重构影响分析必用：语义级全量引用，跨文件且无漏报，优于 grep 文本匹配（按文件语言自动路由）。' +
         '返回引用文件与行列位置列表。',
       parameters: {
         file_path: {
@@ -200,8 +200,8 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
     defineTool({
       name: 'lsp_diagnostics',
       description:
-        '编辑 .cs 文件后必须调用：零错误才算编辑完成；发现错误后配对 lsp_code_action。' +
-        '返回该文件的编译错误/警告/提示。',
+        '编辑 .cs/.ts/.tsx/.js/.jsx 文件后必须调用：零错误才算编辑完成；发现错误后配对 lsp_code_action。' +
+        '返回该文件的编译错误/警告/提示（TS/JS 为推送式诊断，首次调用可能需等待服务器返回）。',
       parameters: {
         file_path: {
           type: 'string' as const,
@@ -246,8 +246,8 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
     defineTool({
       name: 'lsp_document_symbols',
       description:
-        '了解 C# 文件结构时必用，优于读取整个文件。' +
-        '以层级树返回全部符号（类/方法/属性/字段）及行号。',
+        '了解文件结构时必用，优于读取整个文件（按文件语言自动路由 C#/TS/JS）。' +
+        '以层级树返回全部符号（类/方法/属性/字段等）及行号。',
       parameters: {
         file_path: {
           type: 'string' as const,
@@ -278,8 +278,8 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
     defineTool({
       name: 'lsp_call_hierarchy',
       description:
-        '分析 C# 方法调用层级（谁调用了它/它调用了谁），用于调用链路与重构影响分析。' +
-        '注意：csharp-ls 0.26.0 未声明该能力，当前会返回服务器错误。',
+        '分析方法调用层级（谁调用了它/它调用了谁），用于调用链路与重构影响分析。' +
+        '注意：csharp-ls 0.26.0 与 typescript-language-server 5.x 均为能力边界（后者声明能力但请求处理器未注册），当前会返回服务器错误。',
       parameters: {
         file_path: {
           type: 'string' as const,
@@ -344,7 +344,7 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
       name: 'lsp_code_action',
       description:
         'lsp_diagnostics 报错后的配对操作：传入诊断位置获取 quickfix 修复建议' +
-        '（如添加缺失 using、修复类型错误），编辑动作需用编辑工具应用。',
+        '（如补缺失 import/using、修复类型错误），编辑动作需用编辑工具应用。',
       parameters: {
         file_path: {
           type: 'string' as const,
@@ -431,7 +431,7 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
     defineTool({
       name: 'lsp_completion',
       description:
-        '编写 C# 代码时获取光标处智能补全，优于凭记忆猜测 API 名称。' +
+        '编写 C#/TS/JS 代码时获取光标处智能补全，优于凭记忆猜测 API 名称。' +
         '返回可用类/方法/属性/关键字及文档。',
       parameters: {
         file_path: { type: 'string' as const, description: '文件绝对路径', required: true },
@@ -463,9 +463,9 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
     defineTool({
       name: 'lsp_signature',
       description:
-        '调用 C# 方法前确认参数列表，优于读定义。' +
+        '调用方法前确认参数列表，优于读定义。' +
         '返回调用处的方法签名、参数说明与当前活跃参数。' +
-        '需光标位于参数括号内；构造函数调用可能无返回（csharp-ls 限制）。',
+        '需光标位于参数括号内；构造函数调用可能无返回（C# csharp-ls 限制）。',
       parameters: {
         file_path: { type: 'string' as const, description: '文件绝对路径', required: true },
         line: { type: 'integer' as const, description: '行号（0-indexed）', required: true },
@@ -505,7 +505,7 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
     defineTool({
       name: 'lsp_format',
       description:
-        '格式化 C# 文件（全文或指定范围），返回需用编辑工具应用的编辑列表。' +
+        '格式化文件（全文或指定范围，按语言默认风格），返回需用编辑工具应用的编辑列表。' +
         '自动调整缩进、空格、换行等风格。',
       parameters: {
         file_path: { type: 'string' as const, description: '文件绝对路径', required: true },
@@ -535,7 +535,7 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
     defineTool({
       name: 'lsp_rename',
       description:
-        'C# 符号重命名必用，优于手动 grep+逐处替换（语义精确、自动覆盖全部引用）。' +
+        '符号重命名必用，优于手动 grep+逐处替换（语义精确、自动覆盖全部引用；按文件语言自动路由）。' +
         '返回影响的文件数与编辑计划，需用编辑工具应用。',
       parameters: {
         file_path: { type: 'string' as const, description: '文件绝对路径', required: true },
@@ -566,7 +566,7 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
     defineTool({
       name: 'lsp_implement',
       description:
-        '查找 C# 接口/抽象成员的实现位置，优于 grep 猜测实现。' +
+        '查找接口/抽象成员的实现位置，优于 grep 猜测实现（按文件语言自动路由）。' +
         '用于查看接口被哪些类实现、抽象方法被哪些子类重写。',
       parameters: {
         file_path: { type: 'string' as const, description: '文件绝对路径', required: true },
@@ -594,8 +594,8 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
     defineTool({
       name: 'lsp_organize_imports',
       description:
-        '整理 C# 文件的 using 语句（补缺失、按字母排序），返回需用编辑工具应用的编辑列表。' +
-        '注意：csharp-ls 不删除未使用 using——清理用 lsp_diagnostics 查 CS8019 后配 lsp_code_action。',
+        '整理文件的导入语句（补缺失、排序），返回需用编辑工具应用的编辑列表。' +
+        '注意：TS/JS 会删除未使用 import；C# 的 csharp-ls 不删未使用 using——C# 清理走 lsp_diagnostics 查 CS8019 后配 lsp_code_action。',
       parameters: {
         file_path: { type: 'string' as const, description: '文件绝对路径', required: true },
       },
@@ -619,8 +619,9 @@ export function createLspTools(clientOrResolver: LspClient | LspClientResolver) 
     defineTool({
       name: 'lsp_workspace_diagnostics',
       description:
-        '提交/收尾前的 C# 全局健康检查：按文件分组汇总已探明文件的最近诊断' +
-        '（调用过 lsp_diagnostics 的文件 + 收到服务器推送的文件）。',
+        '提交/收尾前的全局健康检查：按文件分组汇总已探明文件的最近诊断' +
+        '（调用过 lsp_diagnostics 的文件 + 收到服务器推送的文件）。' +
+        '注意：TS/JS 服务器不支持 workspace 级拉取，仅覆盖已探明文件。',
       parameters: {},
       isConcurrencySafe() { return true; },
       output: {

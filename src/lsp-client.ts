@@ -21,6 +21,7 @@ import {
   type CompletionList,
   type SignatureHelp,
   type TextEdit,
+  type TextDocumentEdit,
   type WorkspaceEdit,
   type Location as ImplementationLocation,
   type DocumentFormattingParams,
@@ -36,6 +37,7 @@ import {
 } from 'vscode-languageserver-protocol';
 import type { LspServerManager } from './server-manager.js';
 import { normalizeUri } from './server-manager.js';
+import { lspLanguageIdOf } from './languages.js';
 import type { LspLocation } from './types.js';
 
 /** 符号类型中文映射，用于紧凑展示。 */
@@ -107,8 +109,9 @@ export class LspClient {
    * 同步文件内容到 LSP server。
    * 首次打开文件发送 didOpen，内容变化时发送 didChange。
    * 使用缓存避免重复发送相同的文件内容。
+   * 返回是否实际发送了同步通知（didOpen/didChange），供诊断等待判定「新鲜度」。
    */
-  private syncDocument(filePath: string): void {
+  private syncDocument(filePath: string): boolean {
     let text: string;
     try {
       text = readFileSync(filePath, 'utf-8');
@@ -135,6 +138,7 @@ export class LspClient {
         // 必须就地吞掉；连接废弃后此处根本不会到达（getter 先抛"未就绪"）。
       }).catch(() => {});
       this.fileCache.set(filePath, { version, text });
+      return true;
     } else if (cached.text !== text) {
       // 内容变化：发送 didChange 通知（增量更新）
       const newVersion = cached.version + 1;
@@ -144,8 +148,10 @@ export class LspClient {
         // 同 didOpen：写入失败必须吞掉，避免未处理拒绝使宿主崩溃
       }).catch(() => {});
       this.fileCache.set(filePath, { version: newVersion, text });
+      return true;
     }
     // 内容未变化时跳过通知，避免不必要的网络开销
+    return false;
   }
 
   /**
@@ -239,7 +245,7 @@ export class LspClient {
    * csharp-ls 同时支持 push 和 pull；pull 返回更完整的诊断集。
    */
   async diagnostics(filePath: string): Promise<DiagnosticResult[]> {
-    this.syncDocument(filePath);
+    const fresh = this.syncDocument(filePath);
     const uri = normalizeUri(this.toUri(filePath));
 
     // csharp-ls 等支持 pull 的服务器：pull 是唯一权威诊断通道
@@ -273,8 +279,47 @@ export class LspClient {
       }
     }
 
-    // pull-only 服务器：读取 push 诊断缓存
+    // 非 pull（push-only）服务器（typescript-language-server 等）：
+    // didOpen/didChange 后诊断由服务器异步 publishDiagnostics 推送——
+    // 立即读缓存必得空（推送未到）；且 tsserver 首推常为空（项目加载中），
+    // 需等「首推 + 稳定窗口」再读缓存（详见 waitForPushDiagnostics）。
+    return await this.waitForPushDiagnostics(uri, fresh);
+  }
+
+  /** push 诊断稳定窗口（ms）：首推到达后再等一小段，等待项目加载后的真实重推。 */
+  private static readonly PUSH_SETTLE_MS = 300;
+
+  /**
+   * push-only 路径：等待该 URI 的诊断推送并按需稳定。
+   *
+   * - fresh=false（本次未发 didOpen/didChange）：缓存已有内容直接读回；
+   * - fresh=true（刚同步或首次）：等待首个推送到达；此后每次缓存内容变化
+   *   （tsserver 冷启动时序为「空推送(项目加载中) → 就绪后重推真实诊断」）
+   *   重置计时，直到内容连续稳定 PUSH_SETTLE_MS 才返回；
+   * - 全程不超过语言 diagnosticWatchMs；超时返回当前缓存（可能为空），不抛错。
+   */
+  private async waitForPushDiagnostics(uri: string, fresh: boolean): Promise<DiagnosticResult[]> {
+    const deadline = Date.now() + this.manager.diagnosticWatchMs;
+    let lastContent: string | null = null;
+    let lastChangeAt = fresh ? -1 : 0; // 非新同步：立即满足稳定条件
+    while (true) {
+      if (this.manager.hasDiagnostics(uri)) {
+        const content = JSON.stringify(this.manager.getDiagnostics(uri));
+        if (content !== lastContent) {
+          lastContent = content;
+          lastChangeAt = Date.now();
+        }
+        if (Date.now() - lastChangeAt >= LspClient.PUSH_SETTLE_MS) break;
+      }
+      if (Date.now() >= deadline) break;
+      await this.sleep(100);
+    }
     return this.manager.getDiagnostics(uri).map((d) => this.formatDiagnostic(d));
+  }
+
+  /** 可注入的休眠（单元测试可用 fake timers 控制）。 */
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((r) => setTimeout(r, ms));
   }
 
   /**
@@ -341,18 +386,38 @@ export class LspClient {
         title: action.title,
         kind: action.kind ?? undefined,
         isPreferred: action.isPreferred ?? false,
-        // 提取 WorkspaceEdit 中的所有文件编辑
-        edits: action.edit
-          ? Object.entries(action.edit.changes ?? {}).flatMap(([uri, textEdits]) =>
-              textEdits.map((te) => ({
-                filePath: this.fromUri(uri),
-                range: te.range,
-                newText: te.newText,
-              })),
-            )
-          : [],
+        // 提取 WorkspaceEdit 中的所有文件编辑（changes + documentChanges 双形态兼容）
+        edits: action.edit ? this.collectFileEdits(action.edit) : [],
       })),
     );
+  }
+
+  /**
+   * WorkspaceEdit → 扁平文件编辑列表。兼容两种形态：
+   * - changes: Record<uri, TextEdit[]>
+   * - documentChanges: TextDocumentEdit[]（resource 变更 CreateFile/RenameFile/DeleteFile 跳过）
+   * typescript-language-server 的 codeAction/rename 可能返回 documentChanges 形态，
+   * csharp-ls（Roslyn）用 changes——归一后上层无需区分。
+   */
+  private collectFileEdits(edit: WorkspaceEdit): { filePath: string; range: TextEdit['range']; newText: string }[] {
+    const out: { filePath: string; range: TextEdit['range']; newText: string }[] = [];
+    for (const [uri, textEdits] of Object.entries(edit.changes ?? {})) {
+      for (const te of textEdits as TextEdit[]) {
+        out.push({ filePath: this.fromUri(uri), range: te.range, newText: te.newText });
+      }
+    }
+    for (const docChange of edit.documentChanges ?? []) {
+      // TextDocumentEdit 才有 textDocument+edits；CreateFile/RenameFile/DeleteFile 跳过
+      if ('textDocument' in docChange && 'edits' in docChange) {
+        const tde = docChange as TextDocumentEdit;
+        if ('uri' in tde.textDocument && Array.isArray(tde.edits)) {
+          for (const te of tde.edits as TextEdit[]) {
+            out.push({ filePath: this.fromUri(tde.textDocument.uri), range: te.range, newText: te.newText });
+          }
+        }
+      }
+    }
+    return out;
   }
 
   // ─── callHierarchy: 调用层级 ──────────────────────────────────────
@@ -481,7 +546,8 @@ export class LspClient {
   ): Promise<FormatEditResult[]> {
     this.syncDocument(filePath);
     const uri = this.toUri(filePath);
-    const options = { tabSize: 4, insertSpaces: false };
+    // 格式化选项按语言默认值（C# 4/false；TS/JS 2/true），与 workspace/configuration 应答一致
+    const options = { ...this.manager.formatDefaults };
 
     let result: TextEdit[] | null;
     if (range) {
@@ -533,20 +599,24 @@ export class LspClient {
       newName,
     }) as WorkspaceEdit | null;
 
-    if (!result?.changes) return null;
+    if (!result?.changes && !result?.documentChanges) return null;
 
-    // 统计影响范围
-    const affectedFiles = Object.keys(result.changes);
-    let totalEdits = 0;
+    // 统计影响范围（changes + documentChanges 双形态归一）
     const fileEdits: { filePath: string; edits: { range: any; newText: string }[] }[] = [];
-
-    for (const [uri, edits] of Object.entries(result.changes)) {
-      const fEdits = (edits as TextEdit[]).map((te) => ({ range: te.range, newText: te.newText }));
-      fileEdits.push({ filePath: this.fromUri(uri), edits: fEdits });
-      totalEdits += edits.length;
+    let totalEdits = 0;
+    const collected = this.collectFileEdits(result);
+    const byFile = new Map<string, { range: any; newText: string }[]>();
+    for (const fe of collected) {
+      const list = byFile.get(fe.filePath) ?? [];
+      list.push(fe);
+      byFile.set(fe.filePath, list);
+      totalEdits++;
+    }
+    for (const [fp, edits] of byFile) {
+      fileEdits.push({ filePath: fp, edits });
     }
 
-    return this.toJson({ newName, affectedFiles: affectedFiles.length, totalEdits, fileEdits });
+    return this.toJson({ newName, affectedFiles: fileEdits.length, totalEdits, fileEdits });
   }
 
   // ─── implement: 跳转到实现 ──────────────────────────────
@@ -598,13 +668,13 @@ export class LspClient {
 
     if (!result || result.length === 0) return [];
 
-    // 提取第一个 organizeImports 动作的编辑
+    // 提取第一个 organizeImports 动作的编辑（changes + documentChanges 双形态归一）
     const action = result[0]!;
-    if (!action.edit?.changes) return [];
+    if (!action.edit?.changes && !action.edit?.documentChanges) return [];
 
-    return Object.values(action.edit.changes).flat().map((te) => ({
-      range: te.range,
-      newText: te.newText,
+    return this.collectFileEdits(action.edit).map((fe) => ({
+      range: fe.range,
+      newText: fe.newText,
     }));
   }
 
@@ -681,21 +751,9 @@ export class LspClient {
     }
   }
 
-  /** 从文件扩展名推断 LSP languageId。 */
+  /** 从文件扩展名推断 LSP languageId（委托语言注册表，按实例语言路由）。 */
   private inferLanguageId(filePath: string): string {
-    const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
-    const map: Record<string, string> = {
-      cs: 'csharp',
-      ts: 'typescript',
-      tsx: 'typescriptreact',
-      js: 'javascript',
-      jsx: 'javascriptreact',
-      py: 'python',
-      go: 'go',
-      rs: 'rust',
-      java: 'java',
-    };
-    return map[ext] ?? ext;
+    return lspLanguageIdOf(filePath, this.manager.languageId);
   }
 
   /** CompletionItemKind → 中文名映射。 */

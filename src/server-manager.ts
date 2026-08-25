@@ -22,7 +22,9 @@ import {
   type ServerCapabilities,
   type Diagnostic,
   type PublishDiagnosticsParams,
+  type ConfigurationParams,
 } from 'vscode-languageserver-protocol';
+import { LANGUAGES, type LanguageId } from './languages.js';
 import type { LspServerState } from './types.js';
 
 /** 子进程重启策略常量。 */
@@ -38,24 +40,35 @@ const RESTART = {
 /**
  * 规范化 URI，用于诊断缓存键与 pull 请求。
  *
- * Windows 上统一小写盘符（file:///D:/x → file:///d:/x）。实测：csharp-ls 按客户端
- * 传入的 URI 原样登记文档，若 didOpen 与后续 textDocument/diagnostic 的 URI 盘符大小写
- * 不一致（例如不同工具调用传入不同大小写的路径），pull 请求会失配返回空诊断。
- * 全链路统一走归一化 URI 可消除该失配。
+ * 两重归一（缺一即键失配，2026-08-25 集成实测）：
+ * 1. 解码百分号转义：typescript-language-server(tsserver) 推送的 URI 会把盘符
+ *    冒号编码为 %3A（file:///d%3A/...），本客户端查询/缓存键是未经编码的
+ *    file:///d:/...，若不解码则 publishDiagnostics 永远写不进缓存（push 诊断恒空）。
+ * 2. Windows 统一小写盘符（file:///D:/x → file:///d:/x）：csharp-ls 按客户端传入的
+ *    URI 原样登记文档，盘符大小写不一致时 pull 请求会失配返回空诊断。
+ * 全链路统一走归一化 URI 可消除这两类失配。
  */
 export function normalizeUri(uri: string): string {
-  if (process.platform !== 'win32') return uri;
   try {
     const u = new URL(uri);
-    u.pathname = u.pathname.replace(/^\/([a-zA-Z]):/, (_m, d: string) => `/${d.toLowerCase()}:`);
+    // 百分号解码全平台生效（tsserver 编码盘符冒号为 %3A 等）；盘符小写仅 Windows
+    //（Linux 上 /C:/ 是大小写敏感合法路径，不得改写）
+    u.pathname = decodeURIComponent(u.pathname);
+    if (process.platform === 'win32') {
+      u.pathname = u.pathname.replace(/^\/([a-zA-Z]):/, (_m, d: string) => `/${d.toLowerCase()}:`);
+    }
     return u.toString();
   } catch {
-    return uri.replace(/^file:\/\/\/([a-zA-Z]):/, (_m, d: string) => `file:///${d.toLowerCase()}:`);
+    return uri
+      .replace(/%3a/gi, ':')
+      .replace(/^file:\/\/([a-zA-Z]):/, (_m, d: string) => `file:///${d.toLowerCase()}:`);
   }
 }
 
 /** LSP 服务器管理器配置。 */
 export interface ServerManagerOptions {
+  /** 语言 id（决定 env/initOptions/格式默认值等语言差异）。默认 'csharp'（兼容旧调用）。 */
+  readonly languageId?: LanguageId;
   /** LSP server 可执行文件路径或命令名。默认 'csharp-ls'。 */
   readonly command: string;
   /** 传递给 LSP server 的额外参数。 */
@@ -64,6 +77,8 @@ export interface ServerManagerOptions {
   readonly workspaceRoot: string;
   /** initialize 握手超时（毫秒）。 */
   readonly startupTimeoutMs: number;
+  /** push 诊断等待上限（ms）覆盖；缺省按语言描述符默认（TS/JS 5000）。 */
+  readonly diagnosticWaitMs?: number;
   /** 服务器日志级别。 */
   readonly logLevel: string;
   /** 状态变更回调。 */
@@ -138,6 +153,26 @@ export class LspServerManager {
     return this.connection;
   }
 
+  /** 本实例的语言 id（默认 csharp，兼容未传入的旧调用）。 */
+  get languageId(): LanguageId {
+    return this.options.languageId ?? 'csharp';
+  }
+
+  /** 该语言的格式化默认值（lsp_format 请求参数 + workspace/configuration 应答）。 */
+  get formatDefaults(): { tabSize: number; insertSpaces: boolean } {
+    return LANGUAGES[this.languageId].formatDefaults;
+  }
+
+  /** 该语言 push 诊断等待上限（ms；pull 服务器为 0；可用诊断等待配置覆盖）。 */
+  get diagnosticWatchMs(): number {
+    return this.options.diagnosticWaitMs ?? LANGUAGES[this.languageId].diagnosticWatchMs;
+  }
+
+  /** 指定 URI 是否已有诊断推送到达（与「空诊断」区分：推送空数组也算到达）。 */
+  hasDiagnostics(uri: string): boolean {
+    return this._diagnosticsCache.has(normalizeUri(uri));
+  }
+
   /** 获取指定 URI 的诊断缓存（键经归一化，消除大小写失配）。 */
   getDiagnostics(uri: string): Diagnostic[] {
     return this._diagnosticsCache.get(normalizeUri(uri)) ?? [];
@@ -206,15 +241,17 @@ export class LspServerManager {
   /** 启动子进程并建立 JSON-RPC 连接。 */
   private spawnProcess(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const env = { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: '1' };
-      // Windows 上 .NET 全局工具是 .cmd 文件，需要 shell 解析才能找到。
-      // 使用 shell: true 仅在 Windows 上，避免 DEP0190 警告的安全影响
-      // （此处 command 来自用户配置的白名单，非任意输入）。
+      // 语言特定 env（C#：关遥测；TS/JS：无附加项）
+      const env = { ...process.env, ...LANGUAGES[this.languageId].extraEnv };
+      // shell 需求按语言声明：外部 .cmd shim（csharp-ls）在 Windows 需 shell 解析；
+      // bundled 语言（node 绝对路径）严禁 shell——shell:true 只做空格拼接不转义，
+      // 路径含空格会被 cmd 拆炸（'D:\Program' is not recognized 实测定案）。
+      const needShell = LANGUAGES[this.languageId].useShell ?? false;
       const child = spawn(this.options.command, [...this.options.args], {
         cwd: this.options.workspaceRoot,
         stdio: ['pipe', 'pipe', 'pipe'],
         env,
-        shell: process.platform === 'win32',
+        shell: needShell && process.platform === 'win32',
       });
 
       child.on('error', (err) => {
@@ -282,6 +319,25 @@ export class LspServerManager {
       // "Call listen() first"，集成测试若直接自建 connection 无法覆盖此生产装配路径。
       connection.listen();
 
+      // 处理 server→client 请求（部分服务器依赖客户端应答，缺 handler 会回 MethodNotFound）：
+      // 1. workspace/configuration（typescript-language-server 5.1+ 按文件请求
+      //    formattingOptions 的 tabSize/insertSpaces，用于格式化/整理导入等编辑）；
+      //    按该语言 formatDefaults 应答；未知 section 返回 null。
+      // 2. window/workDoneProgress/create：客户端未声明 progress 能力，不会收到；
+      //    注册 null 应答仅为防御，避免意外请求导致返回方法未找到。
+      connection.onRequest('workspace/configuration', (params: ConfigurationParams | null) => {
+        const items = params?.items;
+        if (!items) return null;
+        return items.map((item) => {
+          if (item?.section === 'formattingOptions') {
+            const f = this.formatDefaults;
+            return { tabSize: f.tabSize, insertSpaces: f.insertSpaces };
+          }
+          return null;
+        });
+      });
+      connection.onRequest('window/workDoneProgress/create', () => null);
+
       resolve();
     });
   }
@@ -314,6 +370,9 @@ export class LspServerManager {
           completion: { completionItem: { snippetSupport: true, documentationFormat: ['markdown', 'plaintext'] } },
           // 方法签名提示
           signatureHelp: { signatureInformation: { documentationFormat: ['markdown', 'plaintext'] } },
+          // 调用层级：声明客户端能力——typescript-language-server 按客户端声明
+          // 选择性注册处理器（不声明则返回 Method not found）
+          callHierarchy: {},
           // 文档格式化 + 范围格式化
           formatting: {},
           rangeFormatting: {},
@@ -327,7 +386,7 @@ export class LspServerManager {
         },
         window: {},
       },
-      initializationOptions: {},
+      initializationOptions: LANGUAGES[this.languageId].initializationOptions ?? {},
     };
 
     // initialize 请求，带超时

@@ -50,6 +50,13 @@ function createMockManager(connection: ReturnType<typeof createMockConnection>) 
     // 默认按 csharp-ls 0.26 行为：支持 pull 与工作区 pull
     supportsPull: true,
     supportsWorkspaceDiagnostic: true,
+    // 默认 csharp 语言（push 等待为 0，立即返回缓存）
+    languageId: 'csharp',
+    diagnosticWatchMs: 0,
+    formatDefaults: { tabSize: 4, insertSpaces: false },
+    hasDiagnostics(uri: string) {
+      return diagnosticsCache.has(uri);
+    },
     getDiagnostics(_uri: string) {
       return diagnosticsCache.get(_uri) ?? [];
     },
@@ -609,6 +616,153 @@ describe('LspClient', () => {
         process.off('unhandledRejection', onReject);
       }
       expect(rejections).toHaveLength(0);
+    });
+  });
+
+  // ─── 多语言适配：push 诊断等待 / format 选项 / documentChanges 归一 ──
+  describe('多语言适配（TS/JS 2026-08-25）', () => {
+    it('push-only 服务器：等待推送到达后返回诊断（不立即读空缓存）', async () => {
+      mockManager.supportsPull = false;
+      mockManager.diagnosticWatchMs = 300;
+      mockManager._diagnosticsCache.clear();
+
+      // 150ms 后服务器推送诊断（模拟 publishDiagnostics 异步到达）
+      const timer = setTimeout(() => {
+        mockManager.updateDiagnosticsCache('file:///d:/src/app.ts', [
+          { severity: 1, message: 'TS2322 类型不匹配', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, code: 'TS2322' },
+        ]);
+      }, 150);
+
+      const result = await client.diagnostics('d:\\src\\app.ts');
+      clearTimeout(timer);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]!.severity).toBe('error');
+      expect(result[0]!.code).toBe('TS2322');
+    });
+
+    it('push-only 服务器：等待超时返回当前缓存（可能为空，不抛错）', async () => {
+      mockManager.supportsPull = false;
+      mockManager.diagnosticWatchMs = 50;
+      mockManager._diagnosticsCache.clear();
+
+      const started = Date.now();
+      const result = await client.diagnostics('d:\\src\\never.ts');
+      const elapsed = Date.now() - started;
+
+      expect(result).toEqual([]);
+      expect(elapsed).toBeGreaterThanOrEqual(40);
+    });
+
+    it('format() 使用语言默认格式化选项（TS 2/true）', async () => {
+      mockManager.formatDefaults = { tabSize: 2, insertSpaces: true };
+      mockConn.sendRequest.mockResolvedValueOnce([]);
+
+      await client.format('d:\\src\\app.ts');
+
+      expect(mockConn.sendRequest).toHaveBeenCalledWith(
+        'textDocument/formatting',
+        expect.objectContaining({
+          options: { tabSize: 2, insertSpaces: true },
+        }),
+      );
+    });
+
+    it('codeAction 兼容 documentChanges 形态（ts-ls 可能返回）', async () => {
+      mockConn.sendRequest.mockResolvedValueOnce([
+        {
+          title: 'fix',
+          kind: 'quickfix',
+          isPreferred: true,
+          edit: {
+            documentChanges: [
+              {
+                textDocument: { uri: 'file:///d:/src/app.ts', version: 3 },
+                edits: [
+                  { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } }, newText: 'const' },
+                ],
+              },
+            ],
+          },
+        },
+      ]);
+
+      const result = await client.codeAction(
+        'd:\\src\\app.ts',
+        { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+        [],
+        ['quickfix'],
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0]!.edits).toEqual([
+        { filePath: 'd:\\src\\app.ts', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } }, newText: 'const' },
+      ]);
+    });
+
+    it('rename 兼容 documentChanges 形态并正确统计影响范围', async () => {
+      mockConn.sendRequest
+        .mockResolvedValueOnce(undefined) // prepareRename
+        .mockResolvedValueOnce({
+          documentChanges: [
+            {
+              textDocument: { uri: 'file:///d:/src/a.ts', version: 1 },
+              edits: [
+                { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, newText: 'B' },
+                { range: { start: { line: 2, character: 0 }, end: { line: 2, character: 1 } }, newText: 'B' },
+              ],
+            },
+            {
+              textDocument: { uri: 'file:///d:/src/b.ts', version: 1 },
+              edits: [
+                { range: { start: { line: 1, character: 5 }, end: { line: 1, character: 6 } }, newText: 'B' },
+              ],
+            },
+          ],
+        });
+
+      const result = await client.rename('d:\\src\\a.ts', 0, 0, 'B');
+
+      expect(result).not.toBeNull();
+      expect(result!.affectedFiles).toBe(2);
+      expect(result!.totalEdits).toBe(3);
+      expect(result!.fileEdits.map((f) => f.filePath)).toEqual([
+        'd:\\src\\a.ts',
+        'd:\\src\\b.ts',
+      ]);
+    });
+
+    it('organizeImports 兼容 documentChanges 形态', async () => {
+      mockConn.sendRequest.mockResolvedValueOnce([
+        {
+          title: 'Organize Imports',
+          edit: {
+            documentChanges: [
+              {
+                textDocument: { uri: 'file:///d:/src/app.ts', version: 2 },
+                edits: [
+                  { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 20 } }, newText: 'import { a } from "./a";' },
+                ],
+              },
+            ],
+          },
+        },
+      ]);
+
+      const result = await client.organizeImports('d:\\src\\app.ts');
+
+      expect(result).toHaveLength(1);
+      expect(result[0]!.newText).toBe('import { a } from "./a";');
+    });
+
+    it('didOpen 携带 typescript 语言 id（typescript 管理器）', async () => {
+      mockManager.languageId = 'typescript';
+      mockConn.sendNotification.mockClear();
+      await client.hover('d:\\src\\app.tsx', 0, 0);
+      const calls = mockConn.sendNotification.mock.calls.filter(
+        (c: unknown[]) => c[0] === 'textDocument/didOpen',
+      );
+      expect(calls.at(-1)![1].textDocument.languageId).toBe('typescriptreact');
     });
   });
 });
