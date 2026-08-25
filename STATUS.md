@@ -1,6 +1,6 @@
 # STATUS — dsh-lsp
 
-> 更新：2026-08-25（第五批：TS/JS 多语言化已部署 eb778a4，DSH 重启执行中）· 单元 200/200、集成 29 过 1 跳过
+> 更新：2026-08-25（第五批：TS/JS 多语言化已部署 eb778a4，重启完成，TS 冒烟 8/8 通过；C# 回归冒烟待做）· 单元 200/200、集成 29 过 1 跳过
 
 ## 一、架构健康度
 
@@ -65,7 +65,8 @@
 - **依赖**：typescript-language-server ^5.3.0 + typescript ^5.9.3 入 dependencies（内置分发，DSH profile 走现有 git 依赖流程零额外安装；工作区 typescript 优先）。
 - **测试**：单测 200/200（+34：languages/resolver 多语言/prompt 分段/server-manager handler/lsp-client 等待与归一）；集成新增 `typescript-ls.integration.test.ts` 16 项（真实 ts-ls 进程：14 工具 + jsconfig checkJs + push 诊断等待），夹具 `test-project-ts/`（tsconfig strict）与 `test-project-js/`（jsconfig checkJs）；csharp 集成 14 项零回归。
 - 接口契约变化：无 schema 变化；工具 description/prompt 文案随部署生效；新增配置项 `diagnosticWaitMs`。
-- **部署（2026-08-25）**：commit 链 `28d8ba8`（主功能）→ `5c43a80`（typescript 移入 dependencies，部署对账发现）→ `8e7de38`（bundled 解析改 realpath 锚点，pnpm isolated symlink 下 require 解析失败实测）→ `eb778a4`（测试 mock 补丁）；web profile lockfile 前进至 `eb778a4`，**allowBuilds 键学会双形态并存**（git+ssh 与 https codeload 键随 pnpm 解析协议翻转，两个都放免疫），`dsh plugin --profile web install` 对账通过；安装产物核验：lib 含 languages.js、`createRequire(realpath)` 可解析 typescript-language-server/package.json、cli.mjs 与 typescript/lib 存在。**DSH 重启 + 冒烟执行中**（步骤见 `%TEMP%\dsh-lsp-smoke-checklist.txt`）。
+- **部署（2026-08-25）**：commit 链 `28d8ba8`（主功能）→ `5c43a80`（typescript 移入 dependencies，部署对账发现）→ `8e7de38`（bundled 解析改 realpath 锚点，pnpm isolated symlink 下 require 解析失败实测）→ `eb778a4`（测试 mock 补丁）→ `4884117`（部署记录）；web profile lockfile 前进至 `eb778a4`，**allowBuilds 键学会双形态并存**（git+ssh 与 https codeload 键随 pnpm 解析协议翻转，两个都放免疫），`dsh plugin --profile web install` 对账通过；安装产物核验：lib 含 languages.js、`createRequire(realpath)` 可解析 typescript-language-server/package.json、cli.mjs 与 typescript/lib 存在。
+- **重启 + 冒烟（2026-08-25 完成）**：新实例 PID 26928（01:24:38 启动，3080 健康）；**TS 冒烟 8/8 通过**（本仓库即 TS 工程，会话直接调用新构建）：document_symbols 完整注册表符号树 / hover JSDoc / rename 跨 2 文件 3 处编辑计划 / diagnostics push 等待后零错误 / completion 真实成员补全（Schema 方法）/ workspace_diagnostics 聚合两文件零错误 / format 33 处编辑计划。已知边界符合预期（call_hierarchy 服务器错误）。**C# 回归冒烟待做**：在 C# 项目目录会话复验 diagnostics（pull）与 workspace_diagnostics 非恒空。
 
 ## 三、已知风险点
 
@@ -76,10 +77,7 @@
 
 ## 四、下次最该做的事
 
-1. **部署第五批（待执行）**：`git push` → `~/.dsh/profiles/web` 的 `pnpm update @echocore/dsh-lsp-client` 重解析 git 依赖 → lockfile 前进 → `pnpm-workspace.yaml` allowBuilds 键更新为新 codeload hash → `pnpm install --dir` → `dsh plugin --profile web install` 对账 bundles → 重启 DSH（分离进程 + 日志落盘 `%TEMP%`）→ 冒烟：本仓库（TS 工程）内验证注入与 hover/diagnostics/document_symbols/rename 等。
-2. **重启 DSH 并复验 C# 诊断**：第五批改动覆盖了 normalizeUri（增加百分号解码）与 server-manager（能力声明/应答），需在重启后复验 C# pull 诊断与 workspace_diagnostics 无回归。
-3. （可选）tsgo/TS7 原生 LSP 追踪：`@typescript/native-preview` 编辑器能力（references/rename/signature）补齐后评估替换 typescript-language-server（当前 2026 状态不成熟，见 docs/analysis-tsjs.md §4.2）。
-4. （可选）languages 注册表扩展下一语言（Python/pyright 等）：只改注册表 + 探测标记 + 提示词段。
+1. **C# 回归冒烟（待做）**：在任一 C# 项目目录的新会话复验——`lsp_diagnostics` 返回真实 pull 诊断、`lsp_workspace_diagnostics` 非恒空（第五批 normalizeUri 增加百分号解码 + 客户端能力声明，需确证 C# pull 路径零回归）。
 
 ## 附：2026-08-24 部署记录
 
