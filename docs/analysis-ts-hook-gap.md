@@ -116,3 +116,13 @@
 | D4 测试缺口 | 新增 index.test.ts 3 个 hook 测试、server-manager.test.ts clearDiagnostics、lsp-client.test.ts didChange 清缓存 + waitMs 覆盖；单测 206/206 |
 
 验证：`pnpm typecheck` 零错误；`pnpm test` 206/206；`pnpm test:integration` 29 过 1 跳过；`pnpm build` 成功。
+
+## 10. Q&A：UI 未显示系统提示词注入是否正常（2026-08-26）
+
+用户反馈“C# 和 TS LSP 都没有注入系统提示词”，进一步澄清为“只是 DSH UI 没看到”。
+
+结论：
+- C# 未注入在当前 cwd（`D:\TSProjects\dsh-lsp`）下**正常**：无 `.csproj/.sln/.slnx`，设计为零注入。
+- TS 未注入在 UI 层面**不能判定异常**：安装产物已确认含 `installLspPrompt`/`lsp:tools`/TS 段，且当前 cwd 探测命中 TS；`systemPrompt.context` 是动态 runtime-context，进入模型历史但不一定显示在 UI 系统提示词区。
+- hook 正常：`tools/post-execute` 已部署，单测/集成覆盖，用户此前贴出的 `[lsp] 编辑后发现...` 是实际触发证据。
+- 确证方法：查看 DSH Trajectory/会话日志中的 `TS/JS LSP 工具` / `lsp:tools`。
