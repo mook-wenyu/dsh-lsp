@@ -50,7 +50,7 @@
 | `src/server-manager.ts` | 子进程生命周期：spawn → initialize 握手 → 重启退避 → dispose；能力探测 supportsPull/supportsWorkspaceDiagnostic；push 诊断缓存 | env 注入 DOTNET_CLI_TELEMETRY_OPTOUT；initialize 声明能力集（csharp-ls 语义）；不处理 server→client 请求（workspace/configuration 无 handler） |
 | `src/workspace-pool.ts` | session × projectRoot 实例池（懒启动、disposeSession） | 语言无关 ✅ |
 | `src/workspace-resolver.ts` | 向上探测 `.slnx/.sln/.csproj` 定项目根 | 后缀表写死 C# 三件套；回退 session cwd |
-| `src/prompt.ts` | systemPrompt.context 段「lsp:tools」（order 125）：仅 C# 项目内注入，双向决策边界式 | 文案「C# LSP 工具（14 个）」；探测复用 resolver |
+| `src/prompt.ts` | systemPrompt.section 段「lsp:tools」（order 125）：仅项目内注入，双向决策边界式 | 文案「C# LSP 工具（14 个）」；探测复用 resolver |
 | `src/types.ts` | 类型与常量 | 语言无关 ✅ |
 
 ### 2.2 铁律契约（2026-08-23 三次生产事故沉淀，contract.test.ts 锁定）
