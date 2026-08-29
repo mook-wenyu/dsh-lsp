@@ -39,7 +39,7 @@ type ExtendedContext = Omit<Context, 'tools' | 'systemPrompt'> & {
     register(definition: unknown): () => void;
   };
   systemPrompt: {
-    section(entry: { name: string; order: number; text: (context: any) => string }): void;
+    context(entry: { name: string; order: number; text: (assembly: any) => string }): void;
   };
 };
 
@@ -88,7 +88,7 @@ export const Config = Schema.object({
  *
  * 1. 验证配置
  * 2. 创建 LspServerManager + LspClient
- * 3. 注册 LSP 提示词段到 systemPrompt.section
+ * 3. 注册 LSP 提示词段到 systemPrompt.context
  * 4. 注册 14 个 LSP 工具到 ctx.tools
  * 5. 监听 tools/result 事件，编辑 .cs 文件后自动注入诊断摘要
  * 6. 可选自动启动

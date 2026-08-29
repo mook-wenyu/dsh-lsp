@@ -20,8 +20,8 @@
 
 ### 2.1 系统提示词导入（prompt.ts + languages.ts）
 
-- `src/prompt.ts` 注册 `systemPrompt.section` 段 `lsp:tools`（order 125；2026-08-29 由 context 改为 section，绕过自定义 Agent 的 runtime-context 抑制）。
-- text 回调使用 `context.agent?.session?.header?.cwd` 同步探测 `detectProjectLanguagesSync(cwd)`。
+- `src/prompt.ts` 注册 `systemPrompt.context` 段 `lsp:tools`（order 125；2026-08-29 曾短暂改为 section 验证自定义 Agent，实测无效后已回退 context）。
+- text 回调使用 `assembly.agent?.session?.header?.cwd` 同步探测 `detectProjectLanguagesSync(cwd)`。
 - `src/languages.ts` 的 `typescript` 描述符含 `promptSection`（`## TS/JS LSP 工具（14 个）...`）。
 - 实测：`detectProjectLanguagesSync('D:\\TSProjects\\dsh-lsp')` 返回 `{"typescript":"D:\\TSProjects\\dsh-lsp"}`，即当前 TS 工程会被识别并应注入 TS 段。
 
@@ -123,14 +123,16 @@
 
 结论：
 - C# 未注入在当前 cwd（`D:\TSProjects\dsh-lsp`）下**正常**：无 `.csproj/.sln/.slnx`，设计为零注入。
-- TS 未注入在 UI 层面**不能判定异常**：安装产物已确认含 `installLspPrompt`/`lsp:tools`/TS 段，且当前 cwd 探测命中 TS；`systemPrompt.section` 已替代 context，规避自定义 Agent 关闭 runtime-context 导致动态上下文被整体移除的问题。
+- TS 未注入在 UI 层面**不能判定异常**：安装产物已确认含 `installLspPrompt`/`lsp:tools`/TS 段，且当前 cwd 探测命中 TS；`systemPrompt.context` 是动态 runtime-context，进入模型历史但不一定显示在 UI 系统提示词区。
 - hook 正常：`tools/post-execute` 已部署，单测/集成覆盖，用户此前贴出的 `[lsp] 编辑后发现...` 是实际触发证据。
 - 确证方法：查看 DSH Trajectory/会话日志中的 `TS/JS LSP 工具` / `lsp:tools`。
 
-## 11. section 方案实施与部署（2026-08-29）
+## 11. section 方案尝试与回退（2026-08-29）
 
-用户确认自定义 Agent cwd 为 `D:\TSProjects\dsh-lsp` 但仍无注入 → 根因是 `lsp:tools` 走 `systemPrompt.context`（动态 runtime-context），被自定义 Agent 的 runtime-context 抑制。
+用户确认自定义 Agent cwd 为 `D:\TSProjects\dsh-lsp` 但仍无注入 → 初步判断是 `lsp:tools` 走 `systemPrompt.context`（动态 runtime-context）被自定义 Agent 的 runtime-context 抑制。
 
-修复：`src/prompt.ts` 改用 `systemPrompt.section`（静态系统提示词段，text 支持按 cwd 动态返回空串，不受 runtime-context 抑制影响）；同步更新类型、测试与文档。
+尝试：`src/prompt.ts` 改用 `systemPrompt.section`（静态系统提示词段，不受 runtime-context 抑制影响），部署 `ad8793c` 并重启（PID 19028）。
 
-验证：`pnpm typecheck` 零错误；`pnpm test` 206/206；`pnpm build` 成功；已部署 `ad8793c` 并重启（新实例 PID 19028）。待用户在自定义 Agent Trajectory 确认 `TS/JS LSP 工具` 出现。
+结果：**自定义 Agent Trajectory 仍无 `TS/JS LSP 工具`** → section 方案无效，证明屏蔽不是 runtime-context 抑制；更可能是自定义 Agent 设置了 `complete` 完整系统提示词（会覆盖所有 section），或作用域未合并全局上下文。
+
+处置：按用户要求**回退为 `systemPrompt.context`**（预设 Agent 恢复原行为）。后续若需解决自定义 Agent 注入，应从自定义 Agent 的 `complete` 段/作用域配置入手，而非插件通道。

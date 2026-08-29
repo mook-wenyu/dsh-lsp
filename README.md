@@ -186,7 +186,7 @@ src/
 ├── server-manager.ts     # LSP 服务器子进程生命周期管理（env/initOptions 按语言）
 ├── workspace-pool.ts     # 会话 × 语言 × 项目根 的实例池（多会话隔离与复用）
 ├── workspace-resolver.ts # 项目根发现（多语言联合探测，向上找项目标记）
-├── prompt.ts             # 提示词边界式条件注入（systemPrompt.section 段，按语言分段）
+├── prompt.ts             # 提示词边界式条件注入（systemPrompt.context 段，按语言分段）
 └── types.ts              # 类型定义
 ```
 

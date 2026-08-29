@@ -156,7 +156,7 @@ describe('生产契约：懒启动接线（契约 D）', () => {
           return () => {};
         },
       },
-      systemPrompt: { section: vi.fn() },
+      systemPrompt: { context: vi.fn() },
       effect: vi.fn(),
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     };

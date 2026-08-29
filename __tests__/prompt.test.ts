@@ -8,12 +8,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { installLspPrompt } from '../src/prompt.js';
 
-/** 创建 mock systemPrompt.section，返回注册的 text 回调。 */
-function installAndGetText(): (context: any) => string {
-  let text: ((context: any) => string) | null = null;
+/** 创建 mock systemPrompt.context，返回注册的 text 回调。 */
+function installAndGetText(): (assembly: any) => string {
+  let text: ((assembly: any) => string) | null = null;
   const ctx = {
     systemPrompt: {
-      section: (entry: { name: string; order: number; text: (c: any) => string }) => {
+      context: (entry: { name: string; order: number; text: (a: any) => string }) => {
         text = entry.text;
       },
     },
@@ -28,7 +28,7 @@ describe('installLspPrompt（按语言分段注入）', () => {
     const entry: { name?: string; order?: number; text?: any } = {};
     const ctx = {
       systemPrompt: {
-        section: (e: { name: string; order: number; text: any }) => {
+        context: (e: { name: string; order: number; text: any }) => {
           entry.name = e.name;
           entry.order = e.order;
           entry.text = e.text;

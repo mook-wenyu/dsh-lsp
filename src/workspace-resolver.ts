@@ -61,7 +61,7 @@ async function hasLanguageMarkers(dir: string, markers: readonly ProjectMarker[]
   return hasMarkers(names, markers)
 }
 
-/** 同步版单目录判定（供 systemPrompt.section 同步回调）。 */
+/** 同步版单目录判定（供 systemPrompt.context 同步回调）。 */
 function hasLanguageMarkersSync(dir: string, markers: readonly ProjectMarker[]): boolean {
   let names: string[]
   try {
@@ -142,7 +142,7 @@ export async function detectProjectRoot(dir: string): Promise<string | undefined
 
 /**
  * 同步纯探测：语义同 detectProjectRoot。
- * systemPrompt.section 的 text 回调同步执行（宿主不 await），必须用此版本。
+ * systemPrompt.context 的 text 回调同步执行（宿主不 await），必须用此版本。
  */
 export function detectProjectRootSync(dir: string): string | undefined {
   return detectProjectLanguagesSync(dir).csharp
