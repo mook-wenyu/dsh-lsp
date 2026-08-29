@@ -126,3 +126,11 @@
 - TS 未注入在 UI 层面**不能判定异常**：安装产物已确认含 `installLspPrompt`/`lsp:tools`/TS 段，且当前 cwd 探测命中 TS；`systemPrompt.section` 已替代 context，规避自定义 Agent 关闭 runtime-context 导致动态上下文被整体移除的问题。
 - hook 正常：`tools/post-execute` 已部署，单测/集成覆盖，用户此前贴出的 `[lsp] 编辑后发现...` 是实际触发证据。
 - 确证方法：查看 DSH Trajectory/会话日志中的 `TS/JS LSP 工具` / `lsp:tools`。
+
+## 11. section 方案实施与部署（2026-08-29）
+
+用户确认自定义 Agent cwd 为 `D:\TSProjects\dsh-lsp` 但仍无注入 → 根因是 `lsp:tools` 走 `systemPrompt.context`（动态 runtime-context），被自定义 Agent 的 runtime-context 抑制。
+
+修复：`src/prompt.ts` 改用 `systemPrompt.section`（静态系统提示词段，text 支持按 cwd 动态返回空串，不受 runtime-context 抑制影响）；同步更新类型、测试与文档。
+
+验证：`pnpm typecheck` 零错误；`pnpm test` 206/206；`pnpm build` 成功；已部署 `ad8793c` 并重启（新实例 PID 19028）。待用户在自定义 Agent Trajectory 确认 `TS/JS LSP 工具` 出现。
