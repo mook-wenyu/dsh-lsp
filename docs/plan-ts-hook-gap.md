@@ -46,3 +46,8 @@
 - `tools/post-execute` 内联等待会延迟编辑工具结果最多 1000ms（仅 TS/JS；C# pull 立即返回）。若不可接受，可调小/改为纯后台注入。
 - 新增 peer dependency 需要宿主已有 dsh-llm（DSH 必有）；测试环境需 `pnpm install` 解析。
 - `createUserMessage` 生成的 id 是唯一身份，晚到补注与内联上下文不会与已有消息冲突。
+
+## 后续记录（2026-08-29~30）
+
+- 针对自定义 Agent 未注入 `lsp:tools`，曾尝试把注入通道改为 `systemPrompt.section`（部署 `ad8793c`），实测仍无效后按用户要求回退为 `systemPrompt.context`（部署 `6974f85`）。
+- 完整结论见 `docs/analysis-ts-hook-gap.md` §11：自定义 Agent 的屏蔽更可能是 complete 完整提示词/作用域问题，非插件通道问题。

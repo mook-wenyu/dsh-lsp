@@ -12,6 +12,10 @@ DSH LSP 客户端插件：为 AI 代理提供语言服务器协议（LSP）能�
 - **懒启动**：服务器在首次工具调用时拉起，`start()` 幂等
 - **编辑后自动诊断**：监听 tools/post-execute 事件，编辑 `.cs/.ts/.tsx/.js/.jsx` 文件后自动注入诊断摘要（内联附加 additionalContexts；TS/JS push-only 晚到补注 agent.inject）
 
+## 与 DSH 自定义 Agent 的已知边界
+
+`lsp:tools` 通过 `systemPrompt.context`（动态 runtime-context）注入。若自定义 Agent 未出现该段，且其会话 cwd 确实在受支持项目内，请检查自定义 Agent 是否设置了 **complete 完整系统提示词**或关闭了动态上下文——这属于 DSH 宿主侧配置，插件无法通过切换 `section` 通道绕过（2026-08-29 实测 section 方案无效后已回退 context）。
+
 ## 前置条件
 
 - **C#**：.NET SDK 10+ 与全局 csharp-ls（`dotnet tool install --global csharp-ls`）
@@ -26,18 +30,36 @@ DSH web profile 以 git 依赖方式引用本包（已实证的流程）：
    ```json
    "@echocore/dsh-lsp-client": "github:mook-wenyu/dsh-lsp"
    ```
-2. 在 profile 的 `pnpm-workspace.yaml` 的 `allowBuilds` 中放行构建脚本
+
+2. 在 profile 目录重解析依赖到最新 commit：
+   ```bash
+   cd ~/.dsh/profiles/web
+   pnpm update @echocore/dsh-lsp-client
+   ```
+
+3. 在 profile 的 `pnpm-workspace.yaml` 的 `allowBuilds` 中放行构建脚本
    （安装时经 `prepare` 执行 tsc；键为 pnpm 报错时打印的精确形式，
-   **本仓库 commit 前进后必须同步更新 hash** 再 `pnpm install`）：
+   **本仓库 commit 前进后必须同步更新 hash**，建议同时保留 git+ssh 与 https codeload 两种形态）：
    ```yaml
    allowBuilds:
      "@echocore/dsh-lsp-client@git+ssh://git@github.com/mook-wenyu/dsh-lsp.git#<commit>": true
+     "@echocore/dsh-lsp-client@https://codeload.github.com/mook-wenyu/dsh-lsp/tar.gz/<commit>": true
    ```
-3. 安装并重启 DSH：
+
+4. 重新安装并对账 bundles：
    ```bash
    pnpm install --dir ~/.dsh/profiles/web
-   # 或使用 dsh plugin update 后重启 DSH web profile
+   dsh plugin --profile web install
    ```
+
+5. **重启 DSH** 加载新构建（`dsh plugin install` 不热重载）：
+   ```bash
+   # 重启 web profile（会中断当前会话）
+   dsh web
+   ```
+
+> ⚠️ 不要仅执行裸 `pnpm install` 而不做 `dsh plugin --profile web install` 对账——
+> 该场景曾导致插件 bundle 丢失。每次 commit 前进后按 2→5 步执行。
 
 ## 配置
 
@@ -57,13 +79,13 @@ lsp:
   # diagnosticWaitMs: 5000          # 可选：push-only 服务器（TS/JS）诊断等待上限
 ```
 
-### 方式二：cordis.yml
+### 方式二：cordis.patch.yml 配置覆盖
 
-在 `~/.dsh/profiles/web/cordis.yml` 中添加插件配置：
+本插件通过 profile `package.json` 的 `dsh.profile.bundles` 自动加载（bundle 层），
+通常**不需要**手动 `insert`。如需覆盖插件配置，在 `~/.dsh/profiles/web/cordis.patch.yml` 中按 id 覆盖：
 
 ```yaml
 - id: lsp-client
-  name: '@echocore/dsh-lsp-client'
   config:
     enabled: true
     serverCommand: csharp-ls

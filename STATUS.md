@@ -1,6 +1,6 @@
 # STATUS — dsh-lsp
 
-> 更新：2026-08-29（第七批：lsp:tools 由 systemPrompt.context 改为 section，兼容自定义 Agent 关闭 runtime-context；已部署 ad8793c，重启完成）· 上一状态：2026-08-26 C# 回归冒烟完成 · 单元 206/206、集成 29 过 1 跳过
+> 更新：2026-08-30（第七批终态：lsp:tools 尝试 section 后回退 context；已部署 6974f85，重启完成）· 上一状态：2026-08-29 section 尝试 ad8793c · 单元 206/206、集成 29 过 1 跳过
 
 ## 一、架构健康度
 
@@ -79,13 +79,14 @@
 - **接口契约变化**：无 schema 变化；新增 peerDependency `@deepseek-ai/dsh-llm`（宿主 DSH 必含）；hook 从 `tools/result` 改为 `tools/post-execute`（宿主扩展点，非工具 schema）。
 - **部署状态**：**已部署（2026-08-26）**——commit `b14fdde` 已 push；web profile lockfile 前进至 `b14fdde`，allowBuilds 双形态键已更新；`dsh plugin --profile web install` 对账通过；重启完成，新实例 PID 27560（03:20:41 启动，3080 健康）；TS 冒烟：`lsp_diagnostics(src/index.ts)` 零错误零警告（TS6133 已清除）。
 
-### 第七批（2026-08-29 lsp:tools 改为 section，兼容自定义 Agent，已部署 ad8793c）
+### 第七批（2026-08-29~30 lsp:tools 尝试 section 后回退 context，已部署 6974f85）
 
-- **背景**：用户发现自定义 Agent 会话 cwd 为 `D:\TSProjects\dsh-lsp`（TS 项目），但 Trajectory 中没有 `TS/JS LSP 工具`；预设 Agent 有。确认根因：`lsp:tools` 走 `systemPrompt.context`（动态 runtime-context），自定义 Agent 关闭/抑制了 runtime-context。
-- **修复**：`src/prompt.ts` 将 `systemPrompt.context` 改为 `systemPrompt.section`；section 是静态系统提示词段，不受 `includeRuntimeContext: false` / `suppressRuntimeContext()` 影响，text 仍按 cwd 动态返回空串（保持零注入）。
-- **涉及文件**：`src/prompt.ts`、`src/index.ts`（ExtendedContext 类型）、`src/workspace-resolver.ts`（注释）、`__tests__/prompt.test.ts`、`__tests__/contract.test.ts`、`README.md`、`docs/analysis-ts-hook-gap.md`、`docs/goal-tsjs.md`。
+- **背景**：用户发现自定义 Agent 会话 cwd 为 `D:\TSProjects\dsh-lsp`（TS 项目），但 Trajectory 中没有 `TS/JS LSP 工具`；预设 Agent 有。初步判断 `lsp:tools` 走 `systemPrompt.context`（动态 runtime-context）被自定义 Agent 的 runtime-context 抑制。
+- **尝试**：`src/prompt.ts` 将 `systemPrompt.context` 改为 `systemPrompt.section`（静态系统提示词段，不受 runtime-context 抑制影响），部署 `ad8793c` 并重启（PID 19028）。实测自定义 Agent Trajectory 仍无 `TS/JS LSP 工具` → section 方案无效，屏蔽不是 runtime-context 抑制，更可能是自定义 Agent 的 `complete` 完整提示词/作用域问题。
+- **回退**：按用户要求恢复 `systemPrompt.context`；预设 Agent 恢复原行为。自定义 Agent 注入问题需从 Agent 配置侧解决，非插件通道问题。
+- **涉及文件**：`src/prompt.ts`、`src/index.ts`、`src/workspace-resolver.ts`、`__tests__/prompt.test.ts`、`__tests__/contract.test.ts`、`README.md`、`docs/analysis-ts-hook-gap.md`、`docs/goal-tsjs.md`。
 - **验证**：`pnpm typecheck` 零错误；`pnpm test` **206/206**；`pnpm build` 成功。
-- **部署状态**：**已部署（2026-08-29）**——commit `ad8793c` 已 push；web profile lockfile 前进至 `ad8793c`，allowBuilds 双形态键已更新；`dsh plugin --profile web install` 对账通过；重启完成，新实例 PID 19028（13:02:03 启动，3080 健康）。待用户确认自定义 Agent Trajectory 中出现 `TS/JS LSP 工具`。
+- **部署状态**：**已部署（2026-08-30）**——回退 commit `6974f85` 已 push；web profile lockfile 前进至 `6974f85`，allowBuilds 双形态键已更新；`dsh plugin --profile web install` 对账通过；重启完成，新实例 PID 16152（22:16:32 启动，3080 健康）；安装产物确认 `lib/prompt.js` 使用 `systemPrompt.context`。
 
 ## 三、已知风险点
 

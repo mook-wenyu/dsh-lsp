@@ -1,8 +1,14 @@
 # TestProject
 
-此目录是测试用的辅助 C# 项目。
+仓库根下有三个测试夹具目录，供单元/集成测试使用：
 
-## 用途
+| 目录 | 用途 |
+|---|---|
+| `test-project/` | C# 夹具（`.NET 8.0`）：契约 D 懒启动回归锁 + csharp-ls 集成测试工作区 |
+| `test-project-ts/` | TypeScript 夹具（`tsconfig.json` strict）：typescript-language-server 集成测试工作区 |
+| `test-project-js/` | JavaScript 夹具（`jsconfig.json` + checkJs）：TS/JS checkJs 诊断集成测试工作区 |
+
+## C# 夹具说明
 
 - **单元测试**：`__tests__/contract.test.ts` 的契约 D（懒启动接线回归锁）以本目录为夹具，
   验证工具 execute 经 resolver 命中 `TestProject.csproj` 并前置 `manager.start()`
@@ -20,4 +26,4 @@
 ## 注意
 
 - 不要修改 `Program.cs` 中的符号结构，测试断言依赖其精确内容
-- 此项目仅用于测试，不参与构建分发
+- 三个夹具目录仅用于测试，不参与构建分发
